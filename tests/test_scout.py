@@ -76,7 +76,32 @@ def test_trying_a_candidate_on_paper(alex, db, monkeypatch):
     assert stats["hit_rate"] == 0.5 and stats["novelty"] == 0.75
     assert stats["per_day"] == round(8 / 7, 1) and stats["samples"][0]["title"] in ("c1", "c2", "c3")
     assert scout.worth_suggesting(stats)
-    assert not scout.worth_suggesting({**stats, "hit_rate": 0.1})
+    assert not scout.worth_suggesting({**stats, "hit_rate": 0.4})  # some good bits isn't enough
+    assert not scout.worth_suggesting({**stats, "judged": 5})
+
+
+def test_how_tos_and_adverts_never_count_as_hits(alex, db, monkeypatch):
+    async def ask(rows, questions, state_for):
+        # Every item is relevant, but six of eight are generic how-tos.
+        return [(r["id"], {"answers": {"relevant": {"score": 4}, "generic_howto": {"noul": 0.9 if int(r["id"]) < 6 else 0.1}},
+                           "usage": {"input_tokens": 1}}) for r in rows]
+    monkeypatch.setattr(scout, "ask", ask)
+    monkeypatch.setattr("curator.stories.embed", lambda texts: np.eye(len(texts), 384, dtype=np.float32))
+    stats = scout.evaluate(db, alex, {"items": sample(8)}, np.zeros((0, 384), np.float32))
+    assert stats["hit_rate"] == 0.25 and not scout.worth_suggesting(stats)
+
+
+def test_only_real_articles_make_candidates(alex, db):
+    assert scout.is_post("https://mastodon.social/@sam/113000000000000000")
+    assert scout.is_post("https://bsky.app/profile/sam.bsky.social/post/3kabc")
+    assert not scout.is_post("https://news.example/2026/10/a-real-story")
+    day = lambda d: (datetime.now(timezone.utc) - timedelta(days=d)).isoformat()
+    rows = []
+    for d in range(6):
+        rows.append(("browser", day(d), "blog.example", json.dumps({"url": f"https://blog.example/posts/a-long-article-title-{d}"}), "alex"))
+        rows.append(("browser", day(d), "router.example", json.dumps({"url": "https://router.example/network/default/dashboard"}), "alex"))
+    db.executemany("INSERT INTO agent_events (source, time, host, body, user) VALUES (?, ?, ?, ?, ?)", rows)
+    assert [c["value"] for c in scout.from_browsing(db, alex)] == ["blog.example"]  # not the dashboard
 
 
 def test_the_weekly_run_suggests_the_good_and_remembers_the_rest(alex, db, monkeypatch):
@@ -87,7 +112,7 @@ def test_the_weekly_run_suggests_the_good_and_remembers_the_rest(alex, db, monke
     monkeypatch.setattr(scout, "from_browsing", lambda conn, p: [])
     tried = []
     monkeypatch.setattr(scout, "resolve", lambda conn, http, oh, c: tried.append(c["value"]) or {"kind": "rss", "value": f"https://{c['value']}/rss", "name": c["name"], "items": []})
-    good = {"per_day": 3.0, "hit_rate": 0.5, "novelty": 0.8, "useful_per_day": 1.2, "judged": 10, "samples": [{"title": "t", "url": "u", "score": 0.9}]}
+    good = {"per_day": 3.0, "hit_rate": 0.5, "novelty": 0.8, "useful_per_day": 1.2, "margin": 0.2, "judged": 10, "samples": [{"title": "t", "url": "u", "score": 0.9}]}
     monkeypatch.setattr(scout, "evaluate", lambda conn, p, found, known: good if "good" in found["value"] else {**good, "hit_rate": 0.05})
     ids = scout.scout(db, "alex", use_web=False)
     assert tried == ["good.example", "meh.example"]  # not one Alex already follows

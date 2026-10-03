@@ -69,18 +69,24 @@ sources each reader doesn't have yet, from three places:
   reader's feed for that outlet, or the site's own feed, found by
   autodiscovery), sites whose articles they opened from posts, and people
   whose posts they liked more than once.
-- **Their browsing**: sites the Mac agent saw on at least four days of the
-  last month.
+- **Their browsing**: sites where the Mac agent saw them read articles on
+  at least four days of the last month (article pages only, so dashboards,
+  sign-in pages and their own services don't count).
 - **The web**: Claude (Sonnet, with web search) looks for news sites,
   aggregators, blogs and people around the profile's interests and region.
 
 Each candidate is tried before it's suggested: its recent items (up to 20,
 from the last month) go through the same Jev questions as the feed, which
 says how many a day it would add, what share would clear the reader's bar,
-and how many of those are stories they don't already get. Only sources that
-would add something useful (at least a quarter clearing the bar, and one
-new useful item every ten days) are suggested, at most five a week; the
-rest are remembered so they aren't tried again.
+and how many of those are stories they don't already get. The bar is
+deliberately high: something is suggested only when it's genuinely good.
+At least eight recent items judged, at least half of them would have made
+the feed, and comfortably, on their own merits (an item that's a how-to,
+an advert, hype, rage bait or chatter never counts), and at least one or
+two good, new stories a week. At most three a week; most weeks there may be
+none. Everything tried is remembered so it isn't tried again for twelve
+weeks. Web finds are tried first; candidates without a readable feed don't
+use up the week's tries.
 
 Nothing joins a reader's sources without them. Each suggestion offers
 **Add**, **Try for a week** (its stories come to the maybe lane, marked as

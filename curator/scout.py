@@ -14,7 +14,10 @@ Candidates come from:
 Each candidate's feed is found and its recent items judged with the
 reader's own questions: how many would have made their feed (hit rate), how
 many a day, and how many of those were stories they didn't already get
-(novelty). Only candidates that add something are suggested."""
+(novelty). The bar is high: a source is suggested only if most of what it
+publishes would have made the reader's feed on its own merits (no how-tos,
+adverts, hype or chatter), and enough of that is new to them. Most weeks
+nothing clears it, and that's fine: nothing is suggested."""
 
 import asyncio
 import json
@@ -40,8 +43,15 @@ from curator.traits import ask, count_tokens, item_state
 
 log = logging.getLogger(__name__)
 MODEL = os.environ.get("CURATOR_SCOUT_MODEL", "claude-sonnet-5-5")
-SUGGEST = 5  # at most this many a week
+SUGGEST = 3  # at most this many a week
 TEST_AT_MOST = 12  # candidates tried out per reader per week
+RESOLVE_AT_MOST = 30  # candidates looked up (many have no readable feed)
+# The bar for a suggestion: "genuinely good", not "has some good bits".
+MIN_JUDGED = 8  # recent items judged, so the numbers mean something
+MIN_HIT_RATE = 0.5  # at least half would have made the feed
+MIN_USEFUL_PER_DAY = 0.2  # at least ~1.5 good, new stories a week
+MIN_MARGIN = 0.1  # and the typical hit clears the bar comfortably
+FLAWS = ("rage_bait", "advert", "hype", "chatter", "generic_howto")  # an item with any of these isn't a hit
 SAMPLE = 20  # recent items judged per candidate
 SAMPLE_AGE = timedelta(days=30)
 TRIAL = timedelta(days=7)
@@ -51,7 +61,23 @@ KINDS = ("rss", "mastodon_account", "bluesky_account", "mastodon_hashtag", "blue
 # Places everyone visits that aren't news sources.
 NOT_SOURCES = re.compile(r"(^|\.)(google|gmail|youtube|facebook|instagram|x|twitter|linkedin|reddit|github|gitlab|"
                          r"amazon|ebay|apple|icloud|microsoft|office|live|bing|duckduckgo|wikipedia|wikimedia|zoom|"
-                         r"slack|notion|figma|claude|anthropic|openai|chatgpt|localhost)\.", re.I)
+                         r"slack|notion|figma|claude|anthropic|openai|chatgpt|localhost|awsapps|okta|auth0)\.", re.I)
+# A post's own address on Mastodon or Bluesky, not an article it links to.
+POST_URL = re.compile(r"^/(@[^/]+/\d+|users/[^/]+/statuses/\d+|notes/\w+|profile/[^/]+/post/\w+)/?$")
+# An article's address: a slug of a few hyphenated words somewhere in the path.
+ARTICLE_PATH = re.compile(r"/[a-z0-9]+(?:-[a-z0-9]+){2,}(?:\.html?)?/?(?:$|[?#])", re.I)
+
+
+def is_post(url: str) -> bool:
+    return bool(POST_URL.match(urlsplit(url).path or ""))
+
+
+def own_domains() -> set[str]:
+    """The curator's own domains (and its sign-in provider's): the reader's
+    own services aren't news sources."""
+    from curator.config import OIDC_ISSUER, PUBLIC_URL
+
+    return {".".join(h.split(".")[-2:]) for h in (host(PUBLIC_URL), host(OIDC_ISSUER)) if h and "." in h}
 
 
 def today() -> str:
@@ -83,7 +109,7 @@ def from_signals(conn, profile: Profile) -> list[dict]:
             continue
         if r["source"].startswith("rss:"):
             outlets[r["source"]] += 1
-        else:
+        elif not is_post(r["canonical"]):
             outlets["site:" + host(r["canonical"])] += 1
     for p in people.readers(conn):  # feeds other readers follow have known addresses
         other = people.profile(conn, p)
@@ -99,7 +125,8 @@ def from_signals(conn, profile: Profile) -> list[dict]:
             out.append({"kind": "site", "value": key[5:], "name": key[5:], "why": f"covered {n} stories you liked"})
     # Sites of articles they liked or opened that came via social posts.
     sites = Counter(host(r[0]) for r in conn.execute(
-        f"SELECT canonical FROM items WHERE id IN ({marks}) AND (source LIKE 'mastodon:%' OR source LIKE 'bluesky:%')", liked))
+        f"SELECT canonical FROM items WHERE id IN ({marks}) AND (source LIKE 'mastodon:%' OR source LIKE 'bluesky:%')", liked)
+        if not is_post(r[0]))
     for site, n in sites.items():
         if n >= 2 and site and not NOT_SOURCES.search(site + "."):
             out.append({"kind": "site", "value": site, "name": site, "why": f"you liked or opened {n} of its articles via posts"})
@@ -114,14 +141,26 @@ def from_signals(conn, profile: Profile) -> list[dict]:
 
 
 def from_browsing(conn, profile: Profile) -> list[dict]:
-    """Sites the reader visits on several different days (from their Mac
-    agent, after their never-collect rules)."""
+    """Sites where the reader reads articles on several different days (from
+    their Mac agent, after their never-collect rules). Only article pages
+    count, so dashboards, sign-in pages and their own services don't."""
     since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    mine = own_domains()
     days: dict[str, set] = {}
-    for h, t in conn.execute("SELECT host, substr(time, 1, 10) FROM agent_events WHERE user = ? AND time >= ? AND host IS NOT NULL",
-                             (profile.user, since)):
-        days.setdefault(h.removeprefix("www."), set()).add(t)
-    ranked = sorted(((h, len(d)) for h, d in days.items() if len(d) >= 4 and not NOT_SOURCES.search(h + ".")), key=lambda x: -x[1])
+    articles: dict[str, set] = {}
+    for h, t, body in conn.execute("SELECT host, substr(time, 1, 10), body FROM agent_events WHERE user = ? AND time >= ? AND host IS NOT NULL",
+                                   (profile.user, since)):
+        h = h.lower().removeprefix("www.")
+        if ".".join(h.split(".")[-2:]) in mine or NOT_SOURCES.search(h + "."):
+            continue
+        try:
+            url = json.loads(body or "{}").get("url") or ""
+        except ValueError:
+            continue
+        if ARTICLE_PATH.search(urlsplit(url).path + "/") and not is_post(url):
+            days.setdefault(h, set()).add(t)
+            articles.setdefault(h, set()).add(urlsplit(url).path)
+    ranked = sorted(((h, len(d)) for h, d in days.items() if len(d) >= 4 and len(articles[h]) >= 5), key=lambda x: -x[1])
     return [{"kind": "site", "value": h, "name": h, "why": f"you visited it on {n} days this month"} for h, n in ranked[:10]]
 
 
@@ -134,9 +173,12 @@ something they'd value: news aggregators and curated link sites in their \
 areas, active blogs and newsletters with RSS feeds, people worth reading on \
 Mastodon or Bluesky, and hashtags with real discussion. Favour sources that \
 are active (posting in the last month), substantive, and different from what \
-they already follow. Avoid rage bait, SEO content farms, product-deal sites \
-and anything they said they dislike. Only give addresses and handles you \
-found in your searches; never guess one. Give up to 8, best first."""
+they already follow. Avoid rage bait, SEO content farms, product-deal sites, \
+tutorial mills and anything they said they dislike. Only suggest sources you \
+would personally vouch for as outstanding for this reader; each will be \
+tested against their profile and only the genuinely good ones shown. Only \
+give addresses and handles you found in your searches; never guess one. \
+Give up to 8, best first."""
 
 SCOUT_SCHEMA = {
     "type": "object",
@@ -294,9 +336,11 @@ def evaluate(conn, profile: Profile, found: dict, known: np.ndarray) -> dict | N
     scored = []
     for (n, resp), it, is_new in zip(results, items, novel):
         if resp:
-            score = jev_score(resp["answers"], profile.questions, resp["answers"])
-            if resp["answers"].get("english", {}).get("noul", 1.0) >= 0.3:
-                scored.append((score, bool(is_new), it))
+            a = resp["answers"]
+            score = jev_score(a, profile.questions, a)
+            flawed = any(a.get(f, {}).get("noul", 0.0) >= 0.5 for f in FLAWS)
+            if a.get("english", {}).get("noul", 1.0) >= 0.3:
+                scored.append((-1.0 if flawed else score, bool(is_new), it))
     if len(scored) < 3:
         return None
     dates = [datetime.fromisoformat(it["published"]) for it in items]
@@ -307,13 +351,18 @@ def evaluate(conn, profile: Profile, found: dict, known: np.ndarray) -> dict | N
     novel_hits = [(s, it) for s, new, it in hits if new]
     novelty = len(novel_hits) / len(hits) if hits else 0.0
     useful_per_day = per_day * hit_rate * novelty
+    margin = float(np.median([s - floor for s, _, _ in hits])) if hits else 0.0
     samples = [{"title": it["title"], "url": it["url"], "score": round(s, 2)} for s, it in sorted(novel_hits, key=lambda x: -x[0])[:3]]
     return {"per_day": round(per_day, 1), "hit_rate": round(hit_rate, 2), "novelty": round(novelty, 2),
-            "useful_per_day": round(useful_per_day, 2), "judged": len(scored), "samples": samples}
+            "useful_per_day": round(useful_per_day, 2), "margin": round(margin, 2), "judged": len(scored), "samples": samples}
 
 
 def worth_suggesting(stats: dict | None) -> bool:
-    return bool(stats) and stats["hit_rate"] >= 0.25 and stats["useful_per_day"] >= 0.1 and stats["samples"]
+    """Only the genuinely good: most of what it publishes would make the
+    reader's feed, comfortably, and enough of that is new to them."""
+    return (bool(stats) and stats.get("judged", 0) >= MIN_JUDGED and stats["hit_rate"] >= MIN_HIT_RATE
+            and stats["useful_per_day"] >= MIN_USEFUL_PER_DAY and stats.get("margin", 0.0) >= MIN_MARGIN
+            and bool(stats["samples"]))
 
 
 # ── The weekly run ───────────────────────────────────────────────────────────
@@ -337,12 +386,15 @@ def scout(conn, user: str, use_web: bool = True) -> list[int]:
     seen = already(conn, user)
     # Sites are suggested as their feed's address: match candidates by host too.
     seen_hosts = {host(v if "://" in v else f"https://{v}") for k, v in seen if k == "rss"}
-    candidates = from_signals(conn, profile) + from_browsing(conn, profile)
+    candidates = []
     if use_web:
         try:
             candidates += from_web(profile, sorted(v for _, v in seen))
         except Exception:
             log.exception("scout web search for %s", user)
+    # Web finds first (already vetted), then feeds and people, then bare sites.
+    order = {"rss": 0, "mastodon_account": 1, "bluesky_account": 1, "mastodon_hashtag": 2, "bluesky_hashtag": 2, "site": 3}
+    candidates += sorted(from_signals(conn, profile) + from_browsing(conn, profile), key=lambda c: order.get(c["kind"], 4))
     # One of each, nothing they have or were offered recently.
     unique, keys_seen = [], set()
     for c in candidates:
@@ -364,12 +416,19 @@ def scout(conn, user: str, use_web: bool = True) -> list[int]:
     with httpx.Client(headers=UA, timeout=20) as http:
         owner_http = mastodon_client(owner[0], owner[1]) if owner else None
         try:
-            for c in unique[:TEST_AT_MOST]:
+            for c in unique[:RESOLVE_AT_MOST]:
+                if len(tested) >= TEST_AT_MOST:
+                    break
                 found = resolve(conn, http, owner_http, c)
-                if not found or (found["kind"], found["value"].lower()) in seen or found["value"].lower() in have_urls:
+                if not found:
+                    log.info("scout %s: no readable feed for %s %s", user, c["kind"], c["value"])
+                    continue
+                if (found["kind"], found["value"].lower()) in seen or found["value"].lower() in have_urls:
                     continue
                 stats = evaluate(conn, profile, found, known)
                 tested.append((c, found, stats))
+                log.info("scout %s: tried %s %s: %s", user, found["kind"], found["value"],
+                         {k: v for k, v in (stats or {}).items() if k != "samples"} or "too few recent items")
         finally:
             if owner_http:
                 owner_http.close()
