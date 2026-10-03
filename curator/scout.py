@@ -52,7 +52,7 @@ RESOLVE_AT_MOST = 30  # candidates looked up (many have no readable feed)
 # a sign of care. It's judged on quality alone.
 MIN_JUDGED = 4  # recent items judged, so the numbers mean something
 MIN_HIT_RATE = 0.5  # at least half would have made the feed
-MIN_MARGIN = 0.1  # and the typical hit clears the bar comfortably
+MIN_MARGIN = 0.05  # and the typical hit clears the bar (hits cluster just above it, so this is modest)
 MIN_NOVELTY = 0.5  # and most of those are stories the reader doesn't already get
 FLAWS = ("rage_bait", "advert", "hype", "chatter", "generic_howto")  # an item with any of these isn't a hit
 SAMPLE = 20  # recent items judged per candidate
