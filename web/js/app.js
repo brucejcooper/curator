@@ -1,4 +1,4 @@
-import { Api, accessToken, beginLogin, clientConfig, compareIds, finishLogin, nextId, signOut, signedIn } from './api.js';
+import { Api, accessToken, beginLogin, clientConfig, compareIds, finishLogin, nextId, refreshSettled, signOut, signedIn } from './api.js';
 import { runOnboarding, showProfile } from './profile.js';
 import { el, renderCurated, renderStatus, safariUrl } from './render.js';
 import { showSuggestions } from './suggestions.js';
@@ -103,6 +103,13 @@ const busyText = (text) => [spinner(), text];
 // changed, reload straight away when nothing is in progress (the reading
 // position is saved, so we land in the same place), otherwise offer a reload.
 
+// Reloads the page, but never mid-refresh: the old refresh token is already
+// spent, so losing the new one would sign you out.
+async function reload() {
+  await refreshSettled();
+  location.reload();
+}
+
 const UPDATE_CHECK_MS = 30 * 60_000;
 let loadedVersion = null;
 let loadedBuilt = null;
@@ -133,7 +140,7 @@ async function checkForUpdate() {
   if (!busy()) {
     diag.log('update-reload', { from: loadedVersion.slice(0, 7), to: latest.slice(0, 7) });
     diag.save();
-    location.reload();
+    await reload();
     return;
   }
   diag.log('update-available', { to: latest.slice(0, 7) });
@@ -146,7 +153,7 @@ async function watchForUpdates() {
   loadedBuilt = v?.built ?? null;
   diag.log('version', { version: loadedVersion?.slice(0, 7) ?? 'dev' });
   if (!loadedVersion) return;
-  $('#update-reload').onclick = () => location.reload();
+  $('#update-reload').onclick = reload;
   document.addEventListener('visibilitychange', checkForUpdate);
   setInterval(checkForUpdate, UPDATE_CHECK_MS);
 }
@@ -166,7 +173,7 @@ async function onboard(api) {
   $('#boot').hidden = true;
   $('#onboarding').hidden = false;
   await runOnboarding(api, { showError });
-  location.reload();
+  reload();
 }
 
 // ---------------------------------------------------------------- reader
@@ -693,7 +700,7 @@ class Reader {
     if (err.unauthorised) {
       showToast('Please sign in again');
       signOut();
-      setTimeout(() => location.reload(), 1500);
+      setTimeout(() => reload(), 1500);
       return;
     }
     this.setStatus('Could not load posts.');
@@ -906,7 +913,7 @@ class Reader {
       const latest = (await fetchVersion())?.version;
       if (!latest) $('#app-version').textContent = `${versionLabel()} · couldn't check`;
       else if (latest === loadedVersion) $('#app-version').textContent = `${versionLabel()} · up to date`;
-      else location.reload(); // your place is saved, so this lands where you were
+      else reload(); // your place is saved, so this lands where you were
     };
     $('#position-info').textContent = this.position ? `Read up to ${this.position}` : 'No position saved yet';
     $('#mark-all').onclick = async () => {
@@ -915,7 +922,7 @@ class Reader {
         await this.savePosition();
         const latest = await this.api.markAllRead();
         if (latest) store.set(this.posKey, latest);
-        location.reload();
+        reload();
       } catch (err) {
         showError(err);
       }
@@ -924,7 +931,7 @@ class Reader {
       if (!confirm('Sign out on this device?')) return;
       await this.savePosition();
       signOut();
-      location.reload();
+      reload();
     };
     dlg.showModal();
   }
@@ -947,7 +954,7 @@ class Reader {
       if (!confirm('Disconnect Mastodon? Your feed goes back to curated articles only.')) return;
       try {
         await this.api.disconnectMastodon();
-        location.reload();
+        reload();
       } catch (err) {
         showError(err);
       }
@@ -981,7 +988,17 @@ async function boot() {
     showToast({ connected: 'Mastodon connected: your home timeline will appear shortly', declined: 'Mastodon not connected', failed: "Couldn't connect Mastodon; try again" }[mastodon] || '');
   }
 
-  if (!signedIn() || !(await accessToken().catch(() => null))) return showLogin();
+  if (!signedIn()) return showLogin();
+  try {
+    if (!(await accessToken())) return showLogin();
+  } catch (err) {
+    // Only a rejected session means signing in again; if sign-in or the
+    // curator just couldn't be reached (a restart, a blip), try again shortly.
+    if (!signedIn()) return showLogin();
+    showError(err);
+    setTimeout(boot, 3000);
+    return;
+  }
   const api = new Api();
   try {
     const me = await api.me();

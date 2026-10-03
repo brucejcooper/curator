@@ -132,6 +132,8 @@ async function fakes(ctx) {
         return json(route, issue());
       }
       if (form.get('grant_type') === 'refresh_token') {
+        if (state.tokenDelay) await new Promise((r) => setTimeout(r, state.tokenDelay));
+        if (state.tokenDown) return route.abort();
         // Rotating: a refresh token works once.
         if (form.get('refresh_token') !== state.refresh) return json(route, { error: 'invalid_grant' }, 400);
         state.refreshes++;
@@ -673,6 +675,48 @@ await ctx.close();
   await up.click('#check-update');
   await up.waitForFunction(() => /up to date/.test(document.querySelector('#app-version').textContent));
   await upd.close();
+}
+
+// ---------------------------------------------------------------- staying signed in
+// A deploy noticed while the access token is being refreshed: the reload
+// waits for the refresh, so the new refresh token isn't lost.
+{
+  const stale = { ...signedIn(), expires: Date.now() - 1000 }; // access token expired
+  const rc = await newContext();
+  let deployed = 'v1';
+  await rc.route('**/version.json', (r) => r.fulfill({ contentType: 'application/json', body: JSON.stringify({ version: deployed }) }));
+  await rc.addInitScript(([s]) => { if (!sessionStorage.getItem('seeded')) { localStorage.setItem('reader.session', JSON.stringify(s)); sessionStorage.setItem('seeded', '1'); } }, [stale]);
+  const rp = await rc.newPage();
+  await rp.goto(APP);
+  await rp.waitForSelector('#timeline article');
+  await rp.evaluate(() => {
+    const s = JSON.parse(localStorage.getItem('reader.session'));
+    localStorage.setItem('reader.session', JSON.stringify({ ...s, expires: Date.now() - 1000 }));
+  });
+  state.tokenDelay = 800;
+  deployed = 'v2';
+  const before = state.refreshes;
+  await rp.evaluate(async () => {
+    (await import('./js/api.js')).accessToken().catch(() => {}); // a refresh in flight, as when coming back to the app
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await rp.waitForTimeout(2500);
+  state.tokenDelay = 0;
+  await rp.waitForSelector('#reader:not([hidden])');
+  assert.equal(await rp.isVisible('#login'), false, 'still signed in after reloading for a deploy mid-refresh');
+  assert.ok(state.refreshes > before);
+  // Sign-in unreachable at start-up (a restart, a blip): try again, don't ask to sign in.
+  await rp.evaluate(() => {
+    const s = JSON.parse(localStorage.getItem('reader.session'));
+    localStorage.setItem('reader.session', JSON.stringify({ ...s, expires: Date.now() - 1000 }));
+  });
+  state.tokenDown = true;
+  await rp.reload();
+  await rp.waitForTimeout(1000);
+  assert.equal(await rp.isVisible('#login'), false, 'no sign-in screen for a network blip');
+  state.tokenDown = false;
+  await rp.waitForSelector('#timeline article', { timeout: 8000 });
+  await rc.close();
 }
 
 await browser.close();

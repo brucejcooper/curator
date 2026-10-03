@@ -108,23 +108,44 @@ export async function finishLogin(code, state) {
 }
 
 let refreshing = null;
+
+// Trades the refresh token for new tokens. Tabs share one session, so the
+// trade is done under a lock across tabs, and re-reads the session inside it:
+// if another tab has just done it, its tokens are used, not the spent one.
+async function refreshSession(force) {
+  const run = async () => {
+    const s = load(SESSION_KEY);
+    if (!s) return null;
+    if (!force && s.access && s.expires - SKEW_S * 1000 > Date.now()) return s.access;
+    try {
+      const t = await tokenRequest({ grant_type: 'refresh_token', refresh_token: s.refresh });
+      keep({ ...t, refresh_token: t.refresh_token || s.refresh });
+      return t.access_token;
+    } catch (err) {
+      // A dead refresh token means signing in again, unless it was replaced
+      // meanwhile; a network blip doesn't.
+      const now = load(SESSION_KEY);
+      if ((err.status === 400 || err.status === 401) && now?.refresh === s.refresh) save(SESSION_KEY, null);
+      else if (now?.refresh && now.refresh !== s.refresh && now.expires - SKEW_S * 1000 > Date.now()) return now.access;
+      throw err;
+    }
+  };
+  return navigator.locks ? navigator.locks.request('reader.refresh', run) : run();
+}
+
 // A current access token, refreshing it if needed. Null means signed out.
 export async function accessToken({ force = false } = {}) {
   const s = load(SESSION_KEY);
   if (!s) return null;
   if (!force && s.access && s.expires - SKEW_S * 1000 > Date.now()) return s.access;
-  refreshing ??= tokenRequest({ grant_type: 'refresh_token', refresh_token: s.refresh })
-    .then((t) => {
-      keep({ ...t, refresh_token: t.refresh_token || s.refresh });
-      return t.access_token;
-    })
-    .catch((err) => {
-      // A dead refresh token means signing in again; a network blip doesn't.
-      if (err.status === 400 || err.status === 401) save(SESSION_KEY, null);
-      throw err;
-    })
-    .finally(() => (refreshing = null));
+  refreshing ??= refreshSession(force).finally(() => (refreshing = null));
   return refreshing;
+}
+
+// Resolves once no token refresh is in flight. Reloading mid-refresh would
+// lose the new refresh token (the old one is already spent) and sign you out.
+export function refreshSettled() {
+  return refreshing ? refreshing.then(() => {}, () => {}) : Promise.resolve();
 }
 
 export function signOut() {
