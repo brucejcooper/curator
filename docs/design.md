@@ -80,10 +80,11 @@ from the last month) go through the same Jev questions as the feed, which
 says how many a day it would add, what share would clear the reader's bar,
 and how many of those are stories they don't already get. The bar is
 deliberately high: something is suggested only when it's genuinely good.
-At least eight recent items judged, at least half of them would have made
-the feed, and comfortably, on their own merits (an item that's a how-to,
-an advert, hype, rage bait or chatter never counts), and at least one or
-two good, new stories a week. At most three a week; most weeks there may be
+At least four items from the last three months judged, at least half of
+them would have made the feed, and comfortably, on their own merits (an
+item that's a how-to, an advert, hype, rage bait or chatter never counts),
+and most of those are stories the reader doesn't already get. How often a
+source posts doesn't count against it: rare posting is often a sign of care. At most three a week; most weeks there may be
 none. Everything tried is remembered so it isn't tried again for twelve
 weeks. Web finds are tried first; candidates without a readable feed don't
 use up the week's tries.

@@ -16,7 +16,8 @@ reader's own questions: how many would have made their feed (hit rate), how
 many a day, and how many of those were stories they didn't already get
 (novelty). The bar is high: a source is suggested only if most of what it
 publishes would have made the reader's feed on its own merits (no how-tos,
-adverts, hype or chatter), and enough of that is new to them. Most weeks
+adverts, hype or chatter), and most of that is new to them. How often it
+posts doesn't count against it. Most weeks
 nothing clears it, and that's fine: nothing is suggested."""
 
 import asyncio
@@ -47,13 +48,15 @@ SUGGEST = 3  # at most this many a week
 TEST_AT_MOST = 12  # candidates tried out per reader per week
 RESOLVE_AT_MOST = 30  # candidates looked up (many have no readable feed)
 # The bar for a suggestion: "genuinely good", not "has some good bits".
-MIN_JUDGED = 8  # recent items judged, so the numbers mean something
+# How often a source posts doesn't count against it: rare posting is often
+# a sign of care. It's judged on quality alone.
+MIN_JUDGED = 4  # recent items judged, so the numbers mean something
 MIN_HIT_RATE = 0.5  # at least half would have made the feed
-MIN_USEFUL_PER_DAY = 0.2  # at least ~1.5 good, new stories a week
 MIN_MARGIN = 0.1  # and the typical hit clears the bar comfortably
+MIN_NOVELTY = 0.5  # and most of those are stories the reader doesn't already get
 FLAWS = ("rage_bait", "advert", "hype", "chatter", "generic_howto")  # an item with any of these isn't a hit
 SAMPLE = 20  # recent items judged per candidate
-SAMPLE_AGE = timedelta(days=30)
+SAMPLE_AGE = timedelta(days=90)  # long enough that someone who posts weekly has enough to judge
 TRIAL = timedelta(days=7)
 QUIET = timedelta(weeks=12)  # don't re-suggest a dismissed candidate (or one that tested badly) for this long
 SAME_STORY = 0.87
@@ -359,9 +362,10 @@ def evaluate(conn, profile: Profile, found: dict, known: np.ndarray) -> dict | N
 
 def worth_suggesting(stats: dict | None) -> bool:
     """Only the genuinely good: most of what it publishes would make the
-    reader's feed, comfortably, and enough of that is new to them."""
+    reader's feed, comfortably, and most of that is new to them. However
+    rarely it posts."""
     return (bool(stats) and stats.get("judged", 0) >= MIN_JUDGED and stats["hit_rate"] >= MIN_HIT_RATE
-            and stats["useful_per_day"] >= MIN_USEFUL_PER_DAY and stats.get("margin", 0.0) >= MIN_MARGIN
+            and stats["novelty"] >= MIN_NOVELTY and stats.get("margin", 0.0) >= MIN_MARGIN
             and bool(stats["samples"]))
 
 
@@ -433,12 +437,12 @@ def scout(conn, user: str, use_web: bool = True) -> list[int]:
             if owner_http:
                 owner_http.close()
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    good = sorted((t for t in tested if worth_suggesting(t[2])), key=lambda t: -t[2]["useful_per_day"])[:SUGGEST]
+    good = sorted((t for t in tested if worth_suggesting(t[2])), key=lambda t: (-t[2]["hit_rate"], -t[2]["margin"]))[:SUGGEST]
     ids = []
     for c, found, stats in good:
         cur = conn.execute("INSERT INTO suggestions (user, kind, value, name, why, evidence, score, status, created) "
                            "VALUES (?, ?, ?, ?, ?, ?, ?, 'new', ?)",
-                           (user, found["kind"], found["value"], found["name"], c["why"], json.dumps(stats), stats["useful_per_day"], now))
+                           (user, found["kind"], found["value"], found["name"], c["why"], json.dumps(stats), stats["hit_rate"], now))
         ids.append(cur.lastrowid)
     # Remember the ones that tested badly, so they aren't tried again soon.
     for c, found, stats in tested:

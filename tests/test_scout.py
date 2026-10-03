@@ -77,7 +77,9 @@ def test_trying_a_candidate_on_paper(alex, db, monkeypatch):
     assert stats["per_day"] == round(8 / 7, 1) and stats["samples"][0]["title"] in ("c1", "c2", "c3")
     assert scout.worth_suggesting(stats)
     assert not scout.worth_suggesting({**stats, "hit_rate": 0.4})  # some good bits isn't enough
-    assert not scout.worth_suggesting({**stats, "judged": 5})
+    assert not scout.worth_suggesting({**stats, "judged": 3})
+    # Posting rarely doesn't count against a source.
+    assert scout.worth_suggesting({**stats, "per_day": 0.1, "useful_per_day": 0.04, "judged": 5})
 
 
 def test_how_tos_and_adverts_never_count_as_hits(alex, db, monkeypatch):
