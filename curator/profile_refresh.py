@@ -37,10 +37,12 @@ QUESTIONS_HEADER = """\
 
 
 class LearnedSource(BaseModel):
-    kind: Literal["rss", "mastodon_hashtag", "bluesky_hashtag"]
-    value: str = Field(description="Feed URL, or hashtag without the #")
+    kind: Literal["rss", "mastodon_hashtag", "bluesky_hashtag", "mastodon_account", "bluesky_account"]
+    value: str = Field(description="Feed URL, hashtag without the #, or account (user@server, or a Bluesky handle)")
+    name: str | None = Field(default=None, description="A display name, if it has one; keep it as it was")
     reason: str = Field(description="Why this source, in a few words")
     added: str = Field(description="Date first added, YYYY-MM-DD; keep the original date for existing entries")
+    trial_until: str | None = Field(default=None, description="Keep exactly as it was (the reader is trying this source out)")
 
 
 class Option(BaseModel):
@@ -87,7 +89,9 @@ is a summary of interests, not a log.
 Propose learned sources (Mastodon/Bluesky hashtags, RSS feeds) only when the \
 activity shows a sustained interest the fixed sources miss; give a reason; \
 retire learned sources the activity no longer supports. Only propose RSS URLs \
-you have seen in the activity; never guess a URL.
+you have seen in the activity; never guess a URL. Learned sources with \
+`trial_until` are on trial at the reader's request: keep them exactly as they \
+are. (A weekly scout suggests new sources separately; you needn't.)
 - Jev questions: Jev is a classifier that reads instructions literally and \
 answers with probabilities; it can't do arithmetic or dates. Each request's \
 state is {{"item": {{title, summary, source, ...}}, "reader": {{"profile": \
@@ -114,7 +118,7 @@ def split_sources(text: str) -> tuple[str, list]:
 
 
 def render_sources(head: str, learned: list[LearnedSource]) -> str:
-    entries = [s.model_dump() for s in learned]
+    entries = [{k: v for k, v in s.model_dump().items() if v is not None} for s in learned]
     return head + yaml.safe_dump({"learned": entries}, sort_keys=False, allow_unicode=True, width=100)
 
 

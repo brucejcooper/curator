@@ -367,7 +367,7 @@ function voteButtons(article, current, onVote) {
 export function sourceLabel(source) {
   const [kind, rest = ''] = (source || '').split(/:(.*)/s);
   if (kind === 'rss') return rest;
-  if (kind === 'mastodon') return rest.startsWith('#') ? `${rest} on Mastodon` : 'Mastodon';
+  if (kind === 'mastodon') return /^[#@]/.test(rest) ? `${rest} on Mastodon` : 'Mastodon';
   if (kind === 'bluesky') return `${rest} on Bluesky`;
   return source;
 }
@@ -391,9 +391,11 @@ export function renderCurated(item, { onVote, onBookmark, onOpen }) {
   const link = (attrs, ...children) => el('a', { href, target: '_blank', rel: 'noopener noreferrer', onclick: () => onOpen?.(item), ...attrs }, ...children);
 
   // Say in words what this card is: the edge colour alone didn't explain it.
-  article.append(el('div', { class: 'curated-label' }, maybe
-    ? '🤔 Maybe: the curator isn’t sure. Tell it with 👍 or 👎'
-    : '📰 Picked for you by the curator'));
+  article.append(el('div', { class: 'curated-label' }, item.trial
+    ? `🧪 Trying out ${item.trial}: 👍 or 👎 helps you decide whether to keep it`
+    : maybe
+      ? '🤔 Maybe: the curator isn’t sure. Tell it with 👍 or 👎'
+      : '📰 Picked for you by the curator'));
   article.append(el('header', {},
     el('span', { class: 'avatar source-icon', 'aria-hidden': 'true', text: '📰' }),
     el('div', { class: 'who' },

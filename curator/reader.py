@@ -59,6 +59,7 @@ def articles(user: str) -> list[dict]:
                 "summary": it.get("content_text") or "", "image": it.get("image"), "published": it.get("date_published"),
                 "author": (it.get("authors") or [{}])[0].get("name") or "", "source": c.get("source", ""),
                 "lane": c.get("lane", "main"), "reason": c.get("reason") or "", "also": c.get("also") or [],
+                "trial": c.get("trial"),
             })
         out.sort(key=lambda a: num(a["id"]))
         cached = _articles_cache[user] = {"mtime": mtime, "items": out}

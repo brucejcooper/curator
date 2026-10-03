@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 KEEP_ITEMS = timedelta(days=30)
 KEEP_AGENT_EVENTS = timedelta(days=90)
 KEEP_BACKUPS = 14
+SCOUT_WEEKDAY = int(os.environ.get("CURATOR_SCOUT_WEEKDAY", "6"))  # Sunday: suggestions ready on Monday morning
 
 
 def profiles(conn) -> list:
@@ -147,15 +148,23 @@ def daily() -> None:
     """Revise every reader's profile, re-score them with it, purge, back up,
     and export the profiles that are exported."""
     from curator.profile_refresh import refresh
+    from curator.scout import review_trials, scout
 
     conn = store.connect()
     try:
+        scouting = date.today().weekday() == SCOUT_WEEKDAY
         for user in people.readers(conn):
             try:
                 log.info("profile %s: %s", user, refresh(conn, user))
             except Exception:
                 log.exception("profile refresh for %s", user)
             rescore(conn, user)
+            try:
+                review_trials(conn, user)
+                if scouting:
+                    scout(conn, user)
+            except Exception:
+                log.exception("scout for %s", user)
         purge(conn)
         backup(conn)
         try:

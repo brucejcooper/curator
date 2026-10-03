@@ -1,6 +1,7 @@
 import { Api, accessToken, beginLogin, clientConfig, compareIds, finishLogin, nextId, signOut, signedIn } from './api.js';
 import { runOnboarding, showProfile } from './profile.js';
 import { el, renderCurated, renderStatus, safariUrl } from './render.js';
+import { showSuggestions } from './suggestions.js';
 
 // The reader: your Mastodon home timeline, filtered by the curator and merged
 // with the articles it picked, read oldest to newest from where you left off.
@@ -391,6 +392,12 @@ class Reader {
       $('#settings').close();
       this.openProfile();
     };
+    $('#open-suggestions').onclick = () => {
+      $('#settings').close();
+      this.openSuggestions();
+    };
+    $('#suggest-bar').onclick = () => this.openSuggestions();
+    this.updateSuggestBar();
 
     // Browsers also fire scroll events when content is added or removed, so
     // note when the reader actually touched, wheeled, clicked or typed.
@@ -715,6 +722,7 @@ class Reader {
       panel.hidden = true;
       if (panel.id === 'thread') $('#thread-body').replaceChildren();
       if (panel.id === 'profile') $('#profile-body').replaceChildren();
+      if (panel.id === 'suggestions') $('#suggestions-body').replaceChildren();
     }
   }
 
@@ -751,6 +759,28 @@ class Reader {
       if (focus && t.ancestors.length) body.scrollTop = focus.offsetTop;
     } catch (err) {
       body.replaceChildren(el('p', { class: 'hint pad', text: "Couldn't load this conversation." }));
+      showError(err);
+    }
+  }
+
+  // A quiet bar under the header when the scout has something to look at.
+  updateSuggestBar() {
+    const n = this.me.suggestions || 0;
+    const bar = $('#suggest-bar');
+    bar.hidden = !n;
+    bar.textContent = `💡 ${n} new source suggestion${n === 1 ? '' : 's'} from the curator`;
+  }
+
+  async openSuggestions() {
+    this.openOverlay($('#suggestions'));
+    const onChange = async () => {
+      this.me = { ...this.me, ...(await this.api.me()) };
+      this.updateSuggestBar();
+    };
+    try {
+      await showSuggestions(this.api, $('#suggestions-body'), { showError, busyText, onChange });
+    } catch (err) {
+      $('#suggestions-body').replaceChildren(el('p', { class: 'hint pad', text: "Couldn't load suggestions." }));
       showError(err);
     }
   }

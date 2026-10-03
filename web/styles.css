@@ -375,3 +375,13 @@ fieldset.group legend { font-weight: 600; padding: 0 0.3rem; }
 fieldset.group input { width: 100%; font: inherit; padding: 0.4em; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); }
 .row-inline { display: flex; gap: 0.4rem; }
 .row-inline input { flex: 1; }
+
+/* ---------- suggested sources */
+#suggest-bar { display: block; width: 100%; max-width: 40rem; margin: 0 auto; padding: 0.6rem 1rem; border: 0; border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface)); color: var(--text); text-align: left; font: inherit; cursor: pointer; }
+.suggestions { display: grid; gap: 0.8rem; }
+.suggestion { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 0.8rem 1rem; display: grid; gap: 0.3rem; }
+.suggestion p { margin: 0; }
+.suggestion-name { font-size: 1.05rem; }
+.suggestion .samples { margin: 0; padding-left: 1.2rem; font-size: 0.9rem; }
+.suggestion-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.3rem; }

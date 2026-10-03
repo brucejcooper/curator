@@ -73,6 +73,7 @@
       <button id="refresh" type="button" aria-label="Next post" title="Next post (j)">⌄</button>
     </header>
 
+    <button id="suggest-bar" type="button" hidden></button>
     <div id="older"><p id="older-status"></p></div>
     <main id="timeline"></main>
 
@@ -97,6 +98,14 @@
   </section>
 
 
+  <section id="suggestions" class="overlay" hidden aria-label="Suggested sources">
+    <header class="overlay-bar">
+      <button type="button" class="back" aria-label="Back">‹</button>
+      <strong>Suggested sources</strong>
+    </header>
+    <div id="suggestions-body" class="overlay-body"></div>
+  </section>
+
   <section id="profile" class="overlay" hidden aria-label="How the curator sees you">
     <header class="overlay-bar">
       <button type="button" class="back" aria-label="Back">‹</button>
@@ -118,6 +127,7 @@
     <h2>Settings</h2>
     <p id="signed-in-as" class="hint"></p>
     <button id="open-profile" type="button">How the curator sees you</button>
+    <button id="open-suggestions" type="button">Suggested sources</button>
     <fieldset class="group">
       <legend>Mastodon</legend>
       <p id="mastodon-info" class="hint"></p>

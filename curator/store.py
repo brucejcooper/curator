@@ -71,6 +71,13 @@ CREATE TABLE IF NOT EXISTS home_posts (  -- a post in someone's Mastodon home ti
 CREATE TABLE IF NOT EXISTS agent_events (id INTEGER PRIMARY KEY, source TEXT, time TEXT, host TEXT, body TEXT, user TEXT);
 CREATE INDEX IF NOT EXISTS agent_events_time ON agent_events(time);
 CREATE TABLE IF NOT EXISTS never_collect (user TEXT, kind TEXT, value TEXT, PRIMARY KEY (user, kind, value));  -- from each agent, for purging
+CREATE TABLE IF NOT EXISTS suggestions (  -- the weekly scout's finds, and what the reader decided
+  id INTEGER PRIMARY KEY, user TEXT, kind TEXT, value TEXT, name TEXT,
+  why TEXT, evidence TEXT, score REAL,
+  status TEXT,                  -- new, trial, review (a trial's week is up), accepted, dismissed
+  created TEXT, decided TEXT
+);
+CREATE INDEX IF NOT EXISTS suggestions_user ON suggestions(user, status);
 CREATE TABLE IF NOT EXISTS mastodon_apps (server TEXT PRIMARY KEY, client_id TEXT, client_secret TEXT);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
 """

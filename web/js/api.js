@@ -229,6 +229,16 @@ export class Api {
     return (await this.request('/api/agent-token', { method: 'POST' })).token;
   }
 
+  // The weekly scout's suggestions: { open, trying, history }.
+  suggestions() {
+    return this.request('/api/suggestions');
+  }
+
+  // add | try | dismiss, or keep | drop after a trial.
+  decide(id, action) {
+    return this.request(`/api/suggestions/${id}`, { method: 'POST', body: { action } });
+  }
+
   readers() {
     return this.request('/api/admin/users');
   }

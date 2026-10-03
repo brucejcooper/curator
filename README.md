@@ -6,7 +6,8 @@ groups coverage of the same story, and picks what's worth your time using two
 classifiers side by side: [Jev](https://typesafe.ai) (hosted, calibrated
 judgments) and a local model trained on your votes. Claude keeps a readable
 profile of each reader's interests, revised daily from what they read, vote
-on and bookmark. You read it all in one timeline, oldest to newest, in the
+on and bookmark, and once a week it suggests new sources (sites, people,
+hashtags) it has tried against your interests. You read it all in one timeline, oldest to newest, in the
 included web app.
 
 Several people can use one curator, each with their own profile, sources,
@@ -48,6 +49,7 @@ visit is a short interview that writes their first profile.
 | `MASTODON_SERVER`, `MASTODON_TOKEN` | The owner's Mastodon account, used to read the hashtags anyone follows (read-only) |
 | `CURATOR_REGION` | Where "significant news" is judged from, e.g. `Perth, Australia` |
 | `CURATOR_DAILY_AT`, `TZ` | When the daily jobs run (default 04:30) |
+| `CURATOR_SCOUT_WEEKDAY` | Which day's daily run looks for new sources (0 = Monday; default 6, Sunday) |
 | `CURATOR_DATA` | The data folder (SQLite, feeds, backups); `/data` in the container |
 | `CURATOR_EXPORT_GIT_URL`, `CURATOR_EXPORT_USERS`, `FORGEJO_TOKEN` | Optional: a private git repo the chosen readers' profiles are exported to each day |
 

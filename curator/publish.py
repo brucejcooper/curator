@@ -52,12 +52,14 @@ def candidates(conn, user: str, keys: set[str], since: str) -> list[dict]:
     return stories
 
 
-def margins(conn, user: str, stories: list[dict], floors: dict, source_floors: dict, always: set[str] = frozenset()) -> None:
+def margins(conn, user: str, stories: list[dict], floors: dict, source_floors: dict, always: set[str] = frozenset(),
+            trial: dict | None = None) -> None:
     """Each story's best margin over the bar, per classifier: an item counts
     against its own source's bar where it has one (a news source with a lower
     bar, the reader's home timeline), else the classifier's. Sets
     story["margin_jev"/"margin_local"], and "story_always" when an item came
-    from one of the reader's always-show sources."""
+    from one of the reader's always-show sources, and "story_trial" (the
+    source's name) when one came from a source they're trying out."""
     by_story: dict[str, list] = {}
     ids = [s["story"] for s in stories]
     for i in range(0, len(ids), 500):
@@ -72,6 +74,7 @@ def margins(conn, user: str, stories: list[dict], floors: dict, source_floors: d
     for st in stories:
         rows = by_story.get(st["story"], [])
         st["story_always"] = int(any(r["source"] in always for r in rows))
+        st["story_trial"] = next((trial[r["source"]] for r in rows if trial and r["source"] in trial), None)
         for kind in ("jev", "local"):
             best = None
             for r in rows:
@@ -90,7 +93,7 @@ def select(conn, profile: Profile) -> list[dict]:
     src = profile.sources
     since = (datetime.now(timezone.utc) - timedelta(days=FEED_DAYS)).isoformat(timespec="seconds")
     stories = candidates(conn, profile.user, src["keys"], since)
-    margins(conn, profile.user, stories, src["min_score"], src["source_floors"], src["always"])
+    margins(conn, profile.user, stories, src["min_score"], src["source_floors"], src["always"], src["trial"])
     quota = src["target_per_day"] * FEED_DAYS
     main = people.decider(conn, profile.user)
     other = "local" if main == "jev" else "jev"
@@ -108,7 +111,7 @@ def select(conn, profile: Profile) -> list[dict]:
     for s in stories:
         if s["story_always"] or s["story"] in chosen:
             lane = "main"
-        elif s["story"] in maybes:
+        elif s["story"] in maybes or s["story_trial"]:  # a trial source's items all come to the maybe lane
             lane = "maybe"
         else:
             continue
@@ -175,6 +178,7 @@ def json_feed(conn, stories: list[dict], title: str, feed_url: str) -> dict:
                 "added": s["first_fetched"],
                 "sort_id": sort_id(s),
                 "source": s["source"],
+                "trial": s.get("story_trial"),
                 "also": others,
             },
         })

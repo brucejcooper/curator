@@ -60,6 +60,35 @@ own questions for Jev (YAML). It starts from a short interview, is revised
 daily ("revise, don't rewrite": most days change little), and the reader can
 edit it. Every version is kept, and the app shows what changed in each.
 
+## Finding new sources
+
+Once a week (Sunday's daily run; `CURATOR_SCOUT_WEEKDAY`) a scout looks for
+sources each reader doesn't have yet, from three places:
+
+- **Their signals**: outlets that covered stories they liked (another
+  reader's feed for that outlet, or the site's own feed, found by
+  autodiscovery), sites whose articles they opened from posts, and people
+  whose posts they liked more than once.
+- **Their browsing**: sites the Mac agent saw on at least four days of the
+  last month.
+- **The web**: Claude (Sonnet, with web search) looks for news sites,
+  aggregators, blogs and people around the profile's interests and region.
+
+Each candidate is tried before it's suggested: its recent items (up to 20,
+from the last month) go through the same Jev questions as the feed, which
+says how many a day it would add, what share would clear the reader's bar,
+and how many of those are stories they don't already get. Only sources that
+would add something useful (at least a quarter clearing the bar, and one
+new useful item every ten days) are suggested, at most five a week; the
+rest are remembered so they aren't tried again.
+
+Nothing joins a reader's sources without them. Each suggestion offers
+**Add**, **Try for a week** (its stories come to the maybe lane, marked as
+on trial) and **Not interested**. When a trial's week is up the reader sees
+how it went (items, likes, opens, dislikes) and keeps or drops it. Decisions
+edit the `learned:` part of their sources as a new profile version, which
+the daily revision keeps.
+
 ## The reader app
 
 One timeline, oldest to newest from where you left off, merging your Mastodon

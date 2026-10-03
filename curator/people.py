@@ -159,16 +159,32 @@ def home_source(user_id: str) -> str:
     return f"mastodon:home:{user_id}"
 
 
+def source_key(kind: str, value: str, name: str | None = None) -> str:
+    """The key items from a source are recorded under."""
+    return {
+        "rss": f"rss:{name or value}",
+        "mastodon_hashtag": f"mastodon:#{value}",
+        "bluesky_hashtag": f"bluesky:#{value}",
+        "mastodon_account": f"mastodon:@{value.lstrip('@')}",
+        "bluesky_account": f"bluesky:@{value.lstrip('@')}",
+    }[kind]
+
+
 def parse_sources(text: str, user_id: str) -> dict:
-    """A reader's sources.yaml, as the collector and selection use it."""
+    """A reader's sources.yaml, as the collector and selection use it.
+    `learned` entries (added by the daily job or accepted suggestions) may be
+    on trial (`trial_until`): their items go to the maybe lane, marked."""
     sources = yaml.safe_load(text) or {}
     fixed, learned = sources.get("fixed") or {}, sources.get("learned") or []
     feed = sources.get("feed") or {}
+    masto, bsky = fixed.get("mastodon") or {}, fixed.get("bluesky") or {}
     out = {
         "rss": list(fixed.get("rss") or []),
-        "mastodon_home": (fixed.get("mastodon") or {}).get("home_timeline", True),
-        "mastodon_tags": set((fixed.get("mastodon") or {}).get("hashtags") or []),
-        "bluesky_tags": set((fixed.get("bluesky") or {}).get("hashtags") or []),
+        "mastodon_home": masto.get("home_timeline", True),
+        "mastodon_tags": set(masto.get("hashtags") or []),
+        "mastodon_accounts": {a.lstrip("@") for a in masto.get("accounts") or []},
+        "bluesky_tags": set(bsky.get("hashtags") or []),
+        "bluesky_people": {h.lstrip("@") for h in bsky.get("people") or []},
         "rules": sources.get("rules") or {},
         "target_per_day": feed.get("target_per_day", 100),
         "min_score": {"jev": 0.7, "local": 0.6, **(feed.get("min_score") or {})},
@@ -178,18 +194,40 @@ def parse_sources(text: str, user_id: str) -> dict:
             home_source(user_id): feed.get("home_min_score", 0.5),
         },
         "always": {f"rss:{f['name']}" for f in fixed.get("rss") or [] if f.get("always_show")},
+        "trial": {},  # source key → name, for sources on trial
     }
     for entry in learned:
-        if entry["kind"] == "rss":
-            out["rss"].append({"name": entry["value"], "url": entry["value"]})
-        elif entry["kind"] == "mastodon_hashtag":
-            out["mastodon_tags"].add(entry["value"])
-        elif entry["kind"] == "bluesky_hashtag":
-            out["bluesky_tags"].add(entry["value"])
+        kind, value = entry.get("kind"), str(entry.get("value", ""))
+        if kind == "rss":
+            out["rss"].append({"name": entry.get("name") or value, "url": value})
+        elif kind == "mastodon_hashtag":
+            out["mastodon_tags"].add(value)
+        elif kind == "bluesky_hashtag":
+            out["bluesky_tags"].add(value)
+        elif kind == "mastodon_account":
+            out["mastodon_accounts"].add(value.lstrip("@"))
+        elif kind == "bluesky_account":
+            out["bluesky_people"].add(value.lstrip("@"))
+        else:
+            continue
+        if entry.get("trial_until"):
+            out["trial"][source_key(kind, value, entry.get("name"))] = entry.get("name") or value
     # Every source key this reader reads from: an item is theirs if it was seen in one.
     out["keys"] = ({f"rss:{f['name']}" for f in out["rss"]} | {f"mastodon:#{t}" for t in out["mastodon_tags"]}
-                   | {f"bluesky:#{t}" for t in out["bluesky_tags"]} | {home_source(user_id)})
+                   | {f"bluesky:#{t}" for t in out["bluesky_tags"]} | {f"mastodon:@{a}" for a in out["mastodon_accounts"]}
+                   | {f"bluesky:@{h}" for h in out["bluesky_people"]} | {home_source(user_id)})
     return out
+
+
+def edit_learned(sources_yaml: str, change) -> str:
+    """sources.yaml with its `learned:` list changed by `change(list)`; the
+    hand-kept part above it stays byte for byte."""
+    head, sep, _ = sources_yaml.partition("\nlearned:")
+    if not sep:
+        raise ValueError("sources.yaml has no top-level 'learned:' section")
+    learned = list((yaml.safe_load(sources_yaml) or {}).get("learned") or [])
+    learned = change(learned)
+    return head + "\n" + yaml.safe_dump({"learned": learned}, sort_keys=False, allow_unicode=True, width=100)
 
 
 def profile(conn, user_id: str, version: int | None = None) -> Profile | None:

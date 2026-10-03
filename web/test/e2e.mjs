@@ -151,7 +151,8 @@ async function fakes(ctx) {
     const q = url.searchParams;
     if (url.pathname === '/api/me') {
       return json(route, { user: 'alex', name: 'Alex', admin: true, onboarded: state.onboarded, mastodon: state.mastodon, position: state.position,
-        feed_url: 'https://curator.example/f/secret/feed.json', agent: state.agentTokens > 0, decider: 'jev' });
+        feed_url: 'https://curator.example/f/secret/feed.json', agent: state.agentTokens > 0, decider: 'jev',
+        suggestions: (state.suggestions || []).filter((x) => ['new', 'review'].includes(x.status)).length });
     }
     if (url.pathname === '/api/onboarding') {
       state.onboardingAnswers = body;
@@ -200,6 +201,18 @@ async function fakes(ctx) {
     if (url.pathname === '/api/bookmarks') {
       const arts = state.articles.filter((a) => state.bookmarks.has(a.item)).map((a) => ({ ...a, id: `bookmark-${a.item}`, bookmarked: true }));
       return json(route, { articles: arts, posts: [{ kind: 'status', id: '2999', status: status(2999), verdict: {} }] });
+    }
+    if (url.pathname === '/api/suggestions') {
+      const all = state.suggestions || [];
+      return json(route, { open: all.filter((x) => ['new', 'review'].includes(x.status)), trying: all.filter((x) => x.status === 'trial'),
+        history: all.filter((x) => ['accepted', 'dismissed'].includes(x.status)) });
+    }
+    const sug = url.pathname.match(/^\/api\/suggestions\/(\d+)$/);
+    if (sug) {
+      const x = state.suggestions.find((y) => y.id === Number(sug[1]));
+      x.status = { add: 'accepted', try: 'trial', dismiss: 'dismissed', keep: 'accepted', drop: 'dismissed' }[body.action];
+      x.decided = '2026-10-04 08:00:00';
+      return json(route, { ok: true });
     }
     if (url.pathname === '/api/event') {
       state.events.push(body);
@@ -586,6 +599,48 @@ await ctx.close();
   assert.equal(await ip.evaluate(() => window.opened[0]), 'https://mastodon.au/tags/test', 'falls back when Safari does not take over');
   assert.equal(popup, false);
   await ios.close();
+}
+
+// ---------------------------------------------------------------- suggested sources
+{
+  const ev = { per_day: 4.2, hit_rate: 0.4, novelty: 0.8, samples: [{ title: 'A sample story', url: 'https://news.example/s' }] };
+  state.suggestions = [
+    { id: 1, kind: 'rss', value: 'https://good.example/feed', name: 'Good News', why: 'covered 3 stories you liked', evidence: ev, status: 'new' },
+    { id: 2, kind: 'mastodon_account', value: 'sam@social.example', name: 'Sam', why: 'you liked 2 of their posts', evidence: ev, status: 'new' },
+    { id: 3, kind: 'rss', value: 'https://trial.example/rss', name: 'Trial Times', why: 'web search', status: 'review',
+      evidence: { items: 9, liked: 3, opened: 2, disliked: 1 } },
+  ];
+  const sc = await newContext();
+  await sc.addInitScript(([s]) => localStorage.setItem('reader.session', JSON.stringify(s)), [signedIn()]);
+  const sp = await sc.newPage();
+  sp.on('pageerror', (e) => console.error('pageerror', e));
+  await sp.goto(APP);
+  await sp.waitForSelector('#suggest-bar:not([hidden])');
+  assert.match(await sp.textContent('#suggest-bar'), /3 new source suggestions/);
+  await sp.click('#suggest-bar');
+  await sp.waitForSelector('#suggestions .suggestion');
+  const cards = () => sp.$$eval('#suggestions .suggestion', (a) => a.map((n) => n.textContent));
+  let text = await cards();
+  assert.match(text[0], /Good News.*covered 3 stories.*About 4\.2 a day · 40% would make your feed/s);
+  assert.match(text[1], /@sam@social\.example on Mastodon/);
+  assert.match(text[2], /Trial over.*you liked 3, opened 2, disliked 1.*Keep it.*Drop it/s);
+  await sp.click('.suggestion[data-id="2"] button:has-text("Try for a week")');
+  await sp.waitForFunction(() => document.querySelectorAll('#suggestions .suggestion').length === 2);
+  assert.match(await sp.textContent('#suggestions'), /Trying now.*@sam@social\.example on Mastodon|Trying now.*Sam/s);
+  await sp.click('.suggestion[data-id="1"] button:has-text("Not interested")');
+  await sp.waitForFunction(() => document.querySelectorAll('#suggestions .suggestion').length === 1);
+  await sp.click('.suggestion[data-id="3"] button:has-text("Keep it")');
+  await sp.waitForFunction(() => !document.querySelector('#suggestions .suggestion'));
+  assert.match(await sp.textContent('#suggestions'), /Nothing new this week/);
+  assert.deepEqual(state.suggestions.map((x) => x.status), ['dismissed', 'trial', 'accepted']);
+  await sp.goBack();
+  await sp.waitForFunction(() => document.querySelector('#suggest-bar').hidden);
+  // A story from a source on trial says so.
+  assert.match(await sp.evaluate(async () => (await import('./js/render.js')).renderCurated(
+    { id: '1', item: 'i', url: 'https://news.example/t', title: 'T', summary: '', source: 'rss:Trial Times', lane: 'maybe', trial: 'Trial Times', also: [] }, {}).textContent),
+  /Trying out Trial Times/);
+  await sc.close();
+  state.suggestions = [];
 }
 
 // ---------------------------------------------------------------- updates

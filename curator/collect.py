@@ -66,7 +66,11 @@ def rss(conn, http: httpx.Client, feed: dict) -> list[dict]:
         return []
     resp.raise_for_status()
     store.put(conn, key, {"etag": resp.headers.get("etag"), "modified": resp.headers.get("last-modified")})
-    parsed = feedparser.parse(resp.content)
+    return parse_feed(resp.content, feed["name"], feed.get("always_show", False))
+
+
+def parse_feed(content: bytes, name: str, always_show: bool = False, max_age: timedelta = MAX_AGE) -> list[dict]:
+    parsed = feedparser.parse(content)
     items = []
     for e in parsed.entries:
         link = e.get("link")
@@ -74,11 +78,11 @@ def rss(conn, http: httpx.Client, feed: dict) -> list[dict]:
             continue
         stamp = e.get("published_parsed") or e.get("updated_parsed")
         published = datetime(*stamp[:6], tzinfo=timezone.utc) if stamp else now()
-        if now() - published > MAX_AGE:
+        if now() - published > max_age:
             continue
         summary = e.get("summary") or (e.get("content") or [{}])[0].get("value", "")
-        items.append(item(link, e.get("title", link), summary, f"rss:{feed['name']}", e.get("author"),
-                          published, feed.get("always_show", False), rss_image(e)))
+        items.append(item(link, e.get("title", link), summary, f"rss:{name}", e.get("author"),
+                          published, always_show, rss_image(e)))
     return items
 
 
@@ -159,6 +163,24 @@ def mastodon(conn, http: httpx.Client, path: str, source: str, roots: dict, home
     return items
 
 
+def mastodon_account_id(conn, http: httpx.Client, acct: str) -> str | None:
+    key = f"mastodon-id:{acct}"
+    if (known := store.get(conn, key)) is None:
+        resp = http.get("/api/v1/accounts/lookup", params={"acct": acct})
+        known = resp.json()["id"] if resp.is_success else ""
+        store.put(conn, key, known)
+    return known or None
+
+
+def mastodon_account(conn, http: httpx.Client, acct: str, roots: dict) -> list[dict]:
+    """A person's public posts, without following them."""
+    account = mastodon_account_id(conn, http, acct)
+    if not account:
+        log.warning("mastodon @%s: no such account", acct)
+        return []
+    return mastodon(conn, http, f"/api/v1/accounts/{account}/statuses", f"mastodon:@{acct}", roots)
+
+
 # ── Bluesky ──────────────────────────────────────────────────────────────────
 
 def from_bsky(p: dict, source: str) -> dict | None:
@@ -221,7 +243,7 @@ def shared_sources(profiles: list) -> dict:
     """Everyone's sources, each once. A feed two readers both follow (maybe
     under different names) is fetched once and seen under each name."""
     feeds: dict[str, dict] = {}
-    tags, bsky = set(), set()
+    tags, bsky, accounts, people_ = set(), set(), set(), set()
     for p in profiles:
         src = p.sources
         for f in src["rss"]:
@@ -229,7 +251,24 @@ def shared_sources(profiles: list) -> dict:
             entry["names"].add(f["name"])
         tags |= src["mastodon_tags"]
         bsky |= src["bluesky_tags"]
-    return {"rss": list(feeds.values()), "mastodon_tags": tags, "bluesky_tags": bsky}
+        accounts |= src["mastodon_accounts"]
+        people_ |= src["bluesky_people"]
+    return {"rss": list(feeds.values()), "mastodon_tags": tags, "bluesky_tags": bsky,
+            "mastodon_accounts": accounts, "bluesky_people": people_}
+
+
+def bluesky_person(conn, http: httpx.Client, handle: str) -> list[dict]:
+    """A person's own Bluesky posts (not their replies)."""
+    key = f"bluesky:@{handle}"
+    last = store.get(conn, key, "")
+    resp = http.get("https://api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed",
+                    params={"actor": handle, "limit": 50, "filter": "posts_no_replies"})
+    resp.raise_for_status()
+    posts = [f["post"] for f in resp.json().get("feed", []) if not f.get("reason")]  # skip reposts
+    posts = [p for p in posts if p.get("record", {}).get("createdAt", "") > last]
+    if posts:
+        store.put(conn, key, max(p["record"]["createdAt"] for p in posts))
+    return [it for p in posts if (it := from_bsky(p, f"bluesky:@{handle}"))]
 
 
 def collect_all(conn, profiles: list) -> list[dict]:
@@ -243,14 +282,15 @@ def collect_all(conn, profiles: list) -> list[dict]:
             return items + [{**it, "source": f"rss:{name}"} for name in sorted(f["names"] - {f["name"]}) for it in items]
         jobs = [(f"rss {f['name']}", lambda f=f: feed_job(f)) for f in sources["rss"]]
         jobs += [(f"bluesky #{t}", lambda t=t: bluesky(conn, http, t)) for t in sorted(sources["bluesky_tags"])]
+        jobs += [(f"bluesky @{h}", lambda h=h: bluesky_person(conn, http, h)) for h in sorted(sources["bluesky_people"])]
         for name, job in jobs:
             try:
                 found += job()
             except (httpx.HTTPError, ValueError) as e:
                 log.warning("%s: %s", name, e)
-    # Hashtags, read with the owner's account.
+    # Hashtags and people, read with the owner's account.
     owner = people.mastodon(conn, OWNER)
-    if owner and sources["mastodon_tags"]:
+    if owner and (sources["mastodon_tags"] or sources["mastodon_accounts"]):
         with mastodon_client(owner[0], owner[1]) as http:
             roots: dict = {}
             for t in sorted(sources["mastodon_tags"]):
@@ -258,6 +298,11 @@ def collect_all(conn, profiles: list) -> list[dict]:
                     found += mastodon(conn, http, f"/api/v1/timelines/tag/{t}", f"mastodon:#{t}", roots)
                 except (httpx.HTTPError, ValueError) as e:
                     log.warning("mastodon #%s: %s", t, e)
+            for a in sorted(sources["mastodon_accounts"]):
+                try:
+                    found += mastodon_account(conn, http, a, roots)
+                except (httpx.HTTPError, ValueError, KeyError) as e:
+                    log.warning("mastodon @%s: %s", a, e)
     # Each connected reader's own home timeline.
     stamp = iso(now())
     for p in profiles:

@@ -90,7 +90,9 @@ def me(conn, who: Who, request, body):
             "position": reader.position(conn, who.id),
             "feed_url": f"{PUBLIC_URL}/f/{r['feed_path']}/feed.json",
             "agent": bool(r["agent_token"]),
-            "decider": people.decider(conn, who.id)}
+            "decider": people.decider(conn, who.id),
+            "suggestions": conn.execute("SELECT COUNT(*) FROM suggestions WHERE user = ? AND status IN ('new', 'review')",
+                                        (who.id,)).fetchone()[0]}
 
 
 def timeline(conn, who: Who, request, body):
@@ -211,6 +213,28 @@ def settings(conn, who: Who, request, body):
 def agent_token(conn, who: Who, request, body):
     """A new token for your Mac agent (replacing any old one). Shown once."""
     return {"token": people.new_agent_token(conn, who.id)}
+
+
+# ── Suggested sources ────────────────────────────────────────────────────────
+
+def suggestions(conn, who: Who, request, body):
+    from curator import scout
+
+    return scout.listing(conn, who.id)
+
+
+def decide_suggestion(conn, who: Who, request, body):
+    """{action: add | try | dismiss (a suggestion) | keep | drop (after a trial)}"""
+    from curator import scout
+
+    try:
+        result = scout.decide(conn, who.id, int(request.path_params["id"]), str(body.get("action", "")))
+    except LookupError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=422)
+    changed(request, who)
+    return result
 
 
 # ── Connecting Mastodon ──────────────────────────────────────────────────────
@@ -425,6 +449,8 @@ app = Starlette(
         Route("/api/profile", api(profile), methods=["GET", "PUT"]),
         Route("/api/profile/{version:int}", api(profile_version)),
         Route("/api/settings", api(settings), methods=["PUT"]),
+        Route("/api/suggestions", api(suggestions)),
+        Route("/api/suggestions/{id:int}", api(decide_suggestion), methods=["POST"]),
         Route("/api/agent-token", api(agent_token, needs_profile=False), methods=["POST"]),
         Route("/api/mastodon", api(mastodon_start, needs_profile=False), methods=["POST"]),
         Route("/api/mastodon", api(mastodon_stop, needs_profile=False), methods=["DELETE"]),
