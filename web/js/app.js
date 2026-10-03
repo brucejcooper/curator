@@ -770,12 +770,15 @@ class Reader {
     }
   }
 
-  // A quiet bar under the header when the scout has something to look at.
+  // A 💡 in the header, with a count, when the scout has something to look at.
   updateSuggestBar() {
     const n = this.me.suggestions || 0;
-    const bar = $('#suggest-bar');
-    bar.hidden = !n;
-    bar.textContent = `💡 ${n} new source suggestion${n === 1 ? '' : 's'} from the curator`;
+    const button = $('#suggest-bar');
+    const label = `${n} new source suggestion${n === 1 ? '' : 's'} from the curator`;
+    button.hidden = !n;
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    button.querySelector('.badge').textContent = n;
   }
 
   async openSuggestions() {

@@ -618,7 +618,10 @@ await ctx.close();
   sp.on('pageerror', (e) => console.error('pageerror', e));
   await sp.goto(APP);
   await sp.waitForSelector('#suggest-bar:not([hidden])');
-  assert.match(await sp.textContent('#suggest-bar'), /3 new source suggestions/);
+  assert.equal(await sp.textContent('#suggest-bar .badge'), '3');
+  assert.match(await sp.getAttribute('#suggest-bar', 'title'), /3 new source suggestions/);
+  // In the header, so it's in view wherever the timeline opens.
+  assert.ok(await sp.evaluate(() => { const r = document.querySelector('#suggest-bar').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; }));
   await sp.click('#suggest-bar');
   await sp.waitForSelector('#suggestions .suggestion');
   const cards = () => sp.$$eval('#suggestions .suggestion', (a) => a.map((n) => n.textContent));
