@@ -1,0 +1,26 @@
+# An example never-collect list. Your own lives on your Mac (see
+# agent/curator_agent/never_collect.py) and starts as a copy of this one.
+# Applied on the Mac before anything is sent.
+# Adding a rule later also purges matching history on the curator.
+# Your own copy names sites you consider sensitive, so it stays on your Mac;
+# only its domains and patterns go to the curator, for purging.
+
+categories:
+  # Agreed defaults
+  banks:             [commbank.com.au, westpac.com.au, anz.com.au, nab.com.au, bankwest.com.au, ing.com.au, ubank.com.au, macquarie.com.au, paypal.com]
+  health:            [healthengine.com.au, hotdoc.com.au, healthdirect.gov.au, medibank.com.au, hcf.com.au, bupa.com.au]
+  government:        [gov.au, my.gov.au, ato.gov.au, servicesaustralia.gov.au]
+  password_managers: [1password.com, bitwarden.com, lastpass.com, dashlane.com]
+  webmail:           [mail.google.com, outlook.live.com, outlook.office.com, fastmail.com, mail.proton.me]
+  # Extra categories
+  # Shopping sites are collected (product browsing is a signal); only their
+  # payment and account hosts are blocked here, and carts/orders by pattern.
+  shopping:          [pay.ebay.com, checkout.ebay.com, pay.amazon.com, payments.amazon.com.au]
+  dating_adult:      [tinder.com, bumble.com, hinge.co, okcupid.com, pornhub.com, onlyfans.com]
+  legal_hr_payroll:  [employmenthero.com, xero.com, myob.com, australiansuper.com, hostplus.com.au, rest.com.au]
+
+# Any URL matching one of these is dropped, whatever the domain.
+url_patterns: ['/login', '/signin', '/checkout', '/cart', '/basket', '/order', '/account', '/your-account',
+               '/gp/buy', '/gp/css', '/purchase', '/myb/', '/mye/', '/password', 'token=', 'session=', 'code=']
+
+domains: []        # one-off additions; `curator-agent forget example.com` appends here

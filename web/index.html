@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- Also sent as a header by deploy/nginx.conf; the meta copy covers static hosts like GitHub Pages. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src * data: blob:; media-src * blob:; connect-src 'self' https:; base-uri 'none'; form-action 'self'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Mastorss</title>
+  <meta name="description" content="Your Mastodon home timeline and the curator's picks, read oldest to newest.">
+  <meta name="theme-color" content="#f6f5f2" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#16171b" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Mastorss">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <div id="boot" class="boot" role="status" aria-label="Loading"><span class="spinner"></span></div>
+
+  <section id="login" hidden>
+    <h1>Mastorss</h1>
+    <p>Your Mastodon home timeline and the curator's picks, read oldest to newest. Stop anywhere and you pick up from the same spot next time, on any device.</p>
+    <button id="login-button" type="button" class="primary">Sign in</button>
+  </section>
+
+  <section id="onboarding" hidden>
+    <h1>Let's set up your feed</h1>
+    <p>A few questions so the curator knows what to look for. It writes a profile of your interests from your answers, which you can read and correct any time, and it keeps learning from what you read and vote on.</p>
+    <form id="onboarding-form">
+      <label for="ob-about">About you</label>
+      <textarea id="ob-about" name="about" rows="3" placeholder="What you do, what you're into"></textarea>
+      <label for="ob-where">Where you live</label>
+      <input id="ob-where" name="where" placeholder="For local news, e.g. Hobart, Tasmania">
+      <label for="ob-interests">What you want to read about</label>
+      <textarea id="ob-interests" name="interests" rows="3" placeholder="Hobbies, work topics, causes, places…"></textarea>
+      <label for="ob-dislikes">What you'd rather not see</label>
+      <textarea id="ob-dislikes" name="dislikes" rows="2" placeholder="e.g. sport, celebrity gossip, rage bait"></textarea>
+      <label for="ob-news">General news</label>
+      <select id="ob-news" name="news">
+        <option>The big stories only</option>
+        <option selected>A good spread: local, national and world</option>
+        <option>Plenty of news</option>
+        <option>Hardly any news</option>
+      </select>
+      <label for="ob-sites">Sites or feeds you already like (optional)</label>
+      <textarea id="ob-sites" name="sites" rows="2" placeholder="One per line: a website or its RSS feed"></textarea>
+      <label for="ob-hashtags">Hashtags you follow (optional)</label>
+      <input id="ob-hashtags" name="hashtags" placeholder="e.g. gardening, astronomy">
+      <label for="ob-volume">How much a day, at most</label>
+      <select id="ob-volume" name="volume">
+        <option>About 20</option>
+        <option selected>About 50</option>
+        <option>About 100</option>
+      </select>
+      <button type="submit" class="primary">Start my feed</button>
+    </form>
+  </section>
+
+  <section id="reader" hidden>
+    <header id="bar">
+      <button id="menu" type="button" aria-label="Settings">☰</button>
+      <div class="bar-title">
+        <strong id="count"></strong>
+        <small id="who"></small>
+      </div>
+      <button id="open-bookmarks" type="button" aria-label="Bookmarks" title="Bookmarks">🔖</button>
+      <button id="refresh" type="button" aria-label="Next post" title="Next post (j)">⌄</button>
+    </header>
+
+    <div id="older"><p id="older-status"></p></div>
+    <main id="timeline"></main>
+
+    <div id="end">
+      <p id="end-status"></p>
+      <button id="retry" type="button" class="primary" hidden>Retry</button>
+      <div class="done">
+        <p class="big">You're all caught up</p>
+        <p id="last-checked">New posts will appear here automatically.</p>
+        <button id="check-new" type="button" class="linklike">Check now</button>
+        <p id="pull-hint" class="pull-hint">Pull up to check for new posts</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="thread" class="overlay" hidden aria-label="Thread">
+    <header class="overlay-bar">
+      <button type="button" class="back" aria-label="Back">‹</button>
+      <strong>Thread</strong>
+    </header>
+    <div id="thread-body" class="overlay-body"></div>
+  </section>
+
+
+  <section id="profile" class="overlay" hidden aria-label="How the curator sees you">
+    <header class="overlay-bar">
+      <button type="button" class="back" aria-label="Back">‹</button>
+      <strong>How the curator sees you</strong>
+    </header>
+    <div id="profile-body" class="overlay-body"></div>
+  </section>
+
+  <section id="bookmarks" class="overlay" hidden aria-label="Bookmarks">
+    <header class="overlay-bar">
+      <button type="button" class="back" aria-label="Back">‹</button>
+      <strong>Bookmarks</strong>
+    </header>
+    <div id="bookmarks-body" class="overlay-body"></div>
+  </section>
+
+
+  <dialog id="settings">
+    <h2>Settings</h2>
+    <p id="signed-in-as" class="hint"></p>
+    <button id="open-profile" type="button">How the curator sees you</button>
+    <fieldset class="group">
+      <legend>Mastodon</legend>
+      <p id="mastodon-info" class="hint"></p>
+      <div id="mastodon-connect" class="row-inline">
+        <input id="mastodon-server" placeholder="Your server, e.g. mastodon.social" autocapitalize="off" spellcheck="false" inputmode="url">
+        <button id="mastodon-go" type="button">Connect</button>
+      </div>
+      <button id="mastodon-disconnect" type="button" hidden>Disconnect</button>
+    </fieldset>
+    <fieldset class="group">
+      <legend>Your feed elsewhere</legend>
+      <p class="hint">Your curated feed as JSON Feed, for other readers. Keep the address private.</p>
+      <input id="feed-url" readonly>
+    </fieldset>
+    <fieldset class="group">
+      <legend>Mac agent</legend>
+      <p id="agent-info" class="hint">Sends your browser and Claude Code history (titles and addresses only) to make your profile better. See agent/README.md.</p>
+      <button id="agent-token" type="button">Make an agent token</button>
+      <input id="agent-token-value" readonly hidden>
+    </fieldset>
+    <label class="row">
+      <span>Which classifier picks your feed
+        <small>Jev (hosted) or the local model trained on your votes. The other one runs alongside and fills the Maybe lane.</small></span>
+      <select id="decider"><option value="jev">Jev</option><option value="local">Local model</option></select>
+    </label>
+    <fieldset class="group" id="admin-group" hidden>
+      <legend>Readers</legend>
+      <ul id="admin-readers" class="hint"></ul>
+    </fieldset>
+    <label class="row" id="safari-row" hidden>
+      <input type="checkbox" id="links-in-safari">
+      <span>Open links in Safari
+        <small>Avoids the blank page left behind when a link opens another app (YouTube, Mastodon, …), but that app's back button then goes to Safari instead of here. Needs iOS 17 or later; only applies to the home-screen app.</small></span>
+    </label>
+    <p id="position-info" class="hint"></p>
+    <button id="mark-all" type="button">Mark everything read</button>
+    <button id="copy-diagnostics" type="button">Copy diagnostics</button>
+    <button id="logout" type="button" class="danger">Sign out</button>
+    <button id="settings-close" type="button" class="primary">Done</button>
+    <p class="hint version-row"><span id="app-version"></span>
+      <button type="button" id="check-update" class="linklike">Check for update</button></p>
+  </dialog>
+
+  <div id="update-bar" role="status" hidden>
+    New version available <button type="button" id="update-reload" class="primary">Reload</button>
+  </div>
+
+  <div id="toast" role="alert" hidden></div>
+</body>
+</html>

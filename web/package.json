@@ -1,0 +1,14 @@
+{
+  "name": "curator-reader",
+  "private": true,
+  "description": "The reader app (formerly Mastorss), served by the curator.",
+  "type": "module",
+  "scripts": {
+    "start": "http-server -p 8124 -c-1 -s .",
+    "test": "APP_URL=http://localhost:8124/ node test/e2e.mjs"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1",
+    "playwright": "^1.56.1"
+  }
+}

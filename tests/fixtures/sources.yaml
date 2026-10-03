@@ -1,0 +1,25 @@
+# What the curator collects for Alex.
+
+feed:
+  target_per_day: 50
+  min_score:
+    jev: 0.7
+    local: 0.6
+  home_min_score: 0.5
+
+fixed:
+  rss:
+    - {name: Sky News Feed, url: "https://sky.example/rss", min_score: 0.3}
+    - {name: Garden Blog, url: "https://garden.example/feed", always_show: true}
+  mastodon:
+    home_timeline: true
+    hashtags: [astronomy]
+  bluesky:
+    hashtags: [gardening]
+
+rules:
+  blocked_domains: [spam.example]
+  drop_title_patterns:
+    - '(?i)horoscope'
+
+learned: []

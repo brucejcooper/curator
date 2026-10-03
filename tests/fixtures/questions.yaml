@@ -1,0 +1,17 @@
+relevant:
+  type: score
+  instructions: How much would the reader described in `reader.profile` want to read `item`?
+  criteria:
+    - Clearly unwanted
+    - Probably skip
+    - Might read
+    - Likely read
+    - Must read
+
+topic:
+  type: choice
+  instructions: Which of the reader's interest areas is `item` mainly about?
+  criteria:
+    astronomy: Astronomy
+    gardening: Gardening
+    other: Something else, or unsure
