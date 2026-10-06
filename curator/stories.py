@@ -18,13 +18,18 @@ EMBED_MODEL = os.environ.get("CURATOR_EMBED_MODEL", "BAAI/bge-small-en-v1.5")
 # bge-small similarities sit high: same-story pairs from different outlets
 # measured 0.87-0.99, while different stories from one outlet reached 0.86.
 SAME_STORY = float(os.environ.get("CURATOR_SAME_STORY", "0.87"))
-SAME_SOURCE = 0.93  # one outlet rarely runs the same story twice
+SAME_SOURCE = 0.93  # an outlet's different stories can read alike, so it takes more to merge outright
 FIRST_ITEM_SLACK = 0.05  # also close to the story's first item, so stories don't chain
 # Below SAME_STORY, wording can differ a lot for the same news ("Apple TV just
 # added free classic movies" vs "Apple TV updated its 'Bonus' movies"
 # measured 0.75). Pairs from different sources down to MAYBE_SAME get asked
 # of Jev instead.
 MAYBE_SAME = 0.72
+# An outlet often runs a story again with a new headline or copy, or splits
+# one event into several articles (one per OS on a beta day: 0.81-0.86).
+# Pairs from one source down to MAYBE_SAME_SOURCE get asked of Jev too.
+MAYBE_SAME_SOURCE = 0.78
+GREY_ASKS = 3  # earlier stories to ask about, per new item
 JEV_SAME = 0.6
 WINDOW = timedelta(hours=72)
 SAMPLE_RATE = 0.03  # share of items eligible for the maybe lane's random sample
@@ -62,18 +67,26 @@ def recent(conn, now: datetime):
     return ids, stories, sources, titles, matrix
 
 
-def grey_match(v: np.ndarray, source: str, ids, stories, sources, matrix) -> str | None:
-    """The closest earlier item from another source in the grey zone (could
-    be the same story, Jev decides). Returns its id."""
+def grey_matches(v: np.ndarray, source: str, story: str | None, ids, stories, sources, matrix) -> list[str]:
+    """The closest earlier items in the grey zone (could be the same story,
+    Jev decides), one per other story, up to GREY_ASKS. Returns their ids."""
     if not len(matrix):
-        return None
+        return []
     sims = matrix @ v
+    found, seen = [], {story}
     for i in np.argsort(-sims):
-        if sims[i] < MAYBE_SAME:
-            return None
-        if sources[i] != source:
-            return ids[i]
-    return None
+        if sims[i] < min(MAYBE_SAME, MAYBE_SAME_SOURCE) or len(found) == GREY_ASKS:
+            break
+        if stories[i] in seen:
+            continue
+        if sources[i] == source:
+            if sims[i] < MAYBE_SAME_SOURCE or sims[i] >= SAME_SOURCE:
+                continue
+        elif sims[i] < MAYBE_SAME or sims[i] >= SAME_STORY:
+            continue
+        seen.add(stories[i])
+        found.append(ids[i])
+    return found
 
 
 def same_story(pairs: list[tuple[dict, dict]]) -> list[bool]:
@@ -87,8 +100,11 @@ def same_story(pairs: list[tuple[dict, dict]]) -> list[bool]:
     question = {"same": {
         "type": "noul",
         "instructions": "Do `a` and `b` report the same news story or event (the same announcement, release, incident or "
-                        "finding), even if worded differently or from different outlets?",
-        "criteria": {"true": "The same story", "false": "Different stories, even if on a similar topic"},
+                        "finding), even if worded differently, from different outlets, or one outlet posting it again? Count "
+                        "separate articles about parts of one announcement or release as the same event (e.g. one article "
+                        "per product in the same launch, or per operating system in the same set of updates), since a "
+                        "reader of one would find the other redundant.",
+        "criteria": {"true": "The same story or event", "false": "Different stories, even if on a similar topic"},
     }}
 
     async def run():
@@ -156,8 +172,7 @@ def ingest(conn, found: list[dict]) -> list[str]:
     grey: list[tuple[str, str]] = []  # (new item, earlier item) for Jev to settle
     for it, v in zip(fresh, vectors):
         story = find_story(v, it["source"], ids, stories, sources, matrix)
-        if story is None and (other := grey_match(v, it["source"], ids, stories, sources, matrix)):
-            grey.append((it["id"], other))
+        grey += [(it["id"], other) for other in grey_matches(v, it["source"], story, ids, stories, sources, matrix)]
         if story is None:
             story = it["id"]
             conn.execute("INSERT INTO stories VALUES (?, ?, ?, ?)", (story, it["id"], stamp, stamp))
@@ -177,6 +192,7 @@ def ingest(conn, found: list[dict]) -> list[str]:
         touched.add(story)
 
     if grey:
+        conn.commit()  # don't hold the write lock while Jev decides
         rows = {r["id"]: dict(r) for r in conn.execute(
             f"SELECT id, title, summary, source, story_id FROM items WHERE id IN ({','.join('?' * (2 * len(grey)))})",
             [x for pair in grey for x in pair])}
@@ -186,6 +202,8 @@ def ingest(conn, found: list[dict]) -> list[str]:
             if same:
                 story = conn.execute("SELECT story_id FROM items WHERE id = ?", (a,)).fetchone()[0]
                 into = conn.execute("SELECT story_id FROM items WHERE id = ?", (b,)).fetchone()[0]
+                if story == into:
+                    continue
                 merge_story(conn, into, story)
                 touched.discard(story)
                 touched.add(into)

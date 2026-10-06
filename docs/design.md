@@ -16,7 +16,9 @@ picks what each reader would want, learning from what they actually read.
    near-identical titles become one item, with every place it was seen
    recorded. Items get a local embedding (`bge-small`, on the CPU); items from
    different sources within 72 hours that are close enough are one story.
-   Pairs in the grey zone are put to Jev ("the same story?"). Each story's
+   Pairs in the grey zone are put to Jev ("the same story?"), including an
+   outlet's own reposts and one event split over several articles (a beta
+   day's post per OS). Each story's
    lead is its most informative version: a fuller summary, first to report,
    a source the readers trust, fresh.
 3. **Judge**, cheapest first. Rules for everyone (not English, hashtag soup).
