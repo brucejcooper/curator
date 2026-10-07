@@ -3,8 +3,8 @@ import { runOnboarding, showProfile } from './profile.js';
 import { el, renderCurated, renderStatus, safariUrl } from './render.js';
 import { showSuggestions } from './suggestions.js';
 
-// The reader: your Mastodon home timeline, filtered by the curator and merged
-// with the articles it picked, read oldest to newest from where you left off.
+// The reader: the stories the curator picked, read oldest to newest from
+// where you left off. Your Mastodon home timeline is just another source.
 // Everything comes from the curator this page is served by; the app never
 // talks to Mastodon. Replying, boosting and favouriting happen on your
 // server's own site (↗ See original).
@@ -942,8 +942,8 @@ class Reader {
   settingsMastodon() {
     const on = !!this.me.mastodon;
     $('#mastodon-info').textContent = on
-      ? `Connected to ${this.me.mastodon}: your home timeline is filtered into your feed. Replying and boosting happen there (↗ See original).`
-      : 'Connect your Mastodon account to have your home timeline filtered into your feed. The curator only reads; it never posts.';
+      ? `Connected to ${this.me.mastodon}: your home timeline is one of your sources, judged like the rest. Replying and boosting happen there (↗ See original).`
+      : 'Connect your Mastodon account to add your home timeline to your sources. The curator only reads; it never posts.';
     $('#mastodon-connect').hidden = on;
     $('#mastodon-disconnect').hidden = !on;
     $('#mastodon-go').onclick = async () => {
@@ -954,7 +954,7 @@ class Reader {
       }
     };
     $('#mastodon-disconnect').onclick = async () => {
-      if (!confirm('Disconnect Mastodon? Your feed goes back to curated articles only.')) return;
+      if (!confirm('Disconnect Mastodon? Your home timeline stops being one of your sources.')) return;
       try {
         await this.api.disconnectMastodon();
         reload();
@@ -988,7 +988,7 @@ async function boot() {
   const mastodon = params.get('mastodon');
   if (mastodon) {
     history.replaceState(null, '', location.pathname);
-    showToast({ connected: 'Mastodon connected: your home timeline will appear shortly', declined: 'Mastodon not connected', failed: "Couldn't connect Mastodon; try again" }[mastodon] || '');
+    showToast({ connected: 'Mastodon connected: posts from your home timeline will appear within 15 minutes', declined: 'Mastodon not connected', failed: "Couldn't connect Mastodon; try again" }[mastodon] || '');
   }
 
   if (!signedIn()) return showLogin();

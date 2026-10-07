@@ -1,9 +1,9 @@
-"""A reader's view of the world: one timeline merging their Mastodon home
-timeline (if they've connected one, filtered by the curator) with the
-articles the curator picked for them, in timeline-id order. Mastodon ids are
-milliseconds << 16, and curated stories carry a sort_id in the same space,
-so "after X" and "before X" mean the same thing for both. The reader app
-never talks to Mastodon; this module does, with the reader's own token."""
+"""A reader's view of the world: one timeline of the stories the curator
+picked for them, in timeline-id order. Their Mastodon home timeline is just
+another source: its posts are collected, grouped and judged like any other,
+so each story shows once. Story ids are Mastodon-style (milliseconds << 16)
+from when the story was first seen. The reader app never talks to Mastodon;
+this module does (threads, bookmarks), with the reader's own token."""
 
 import json
 import logging
@@ -12,7 +12,7 @@ import httpx
 
 from curator import people
 from curator.collect import mastodon_client
-from curator.home import item_for_status, verdicts
+from curator.home import item_for_status
 from curator.people import Profile
 from curator.publish import feed_folder
 
@@ -24,27 +24,13 @@ def num(i: str | None) -> int:
     return int(i) if i else 0
 
 
-def account_id(conn, user: str, creds: tuple) -> str:
-    """The reader's own Mastodon account id (looked up once)."""
-    if creds[2]:
-        return creds[2]
-    with mastodon_client(creds[0], creds[1]) as http:
-        account = http.get("/api/v1/accounts/verify_credentials").raise_for_status().json()["id"]
-    conn.execute("UPDATE users SET mastodon_account = ? WHERE id = ?", (account, user))
-    conn.commit()
-    return account
-
-
 # ── Curated articles (from the reader's published feed) ─────────────────────
 
 def articles(user: str) -> list[dict]:
-    """The curated stories in the reader's feed, oldest first. Stories that
-    include a post from their own home timeline are left out: the timeline
-    shows that post, with the other coverage under it."""
+    """The curated stories in the reader's feed, oldest first."""
     path = feed_folder(user) / "feed.json"
     if not path.exists():
         return []
-    home = people.home_source(user)
     mtime = path.stat().st_mtime
     cached = _articles_cache.get(user)
     if not cached or cached["mtime"] != mtime:
@@ -52,7 +38,7 @@ def articles(user: str) -> list[dict]:
         out = []
         for it in feed.get("items", []):
             c = it.get("_curator") or {}
-            if not c.get("sort_id") or c.get("source") == home or any(a.get("source") == home for a in c.get("also") or []):
+            if not c.get("sort_id"):
                 continue
             out.append({
                 "kind": "article", "id": c["sort_id"], "item": it["id"], "url": it["url"], "title": it["title"],
@@ -83,77 +69,27 @@ def annotate(conn, user: str, entries: list[dict]) -> list[dict]:
     return entries
 
 
-# ── The merged timeline ──────────────────────────────────────────────────────
-
-def statuses(conn, profile: Profile, creds: tuple, page: list[dict]) -> list[dict]:
-    """Home posts that clear the bar, as timeline entries. Your own posts and
-    posts mentioning you always show."""
-    me = account_id(conn, profile.user, creds)
-    inner = lambda s: s.get("reblog") or s
-    mine = lambda s: inner(s)["account"]["id"] == me or any(m["id"] == me for m in inner(s).get("mentions") or [])
-    v = verdicts(conn, profile, [s["id"] for s in page if not mine(s)]) if page else {}
-    out = []
-    for s in page:
-        verdict = v.get(s["id"], {"show": True, "lane": "main"})
-        if mine(s) or verdict.get("show", True):
-            out.append({"kind": "status", "id": s["id"], "status": s, "item": verdict.get("item"),
-                        "verdict": {k: verdict.get(k) for k in ("lane", "also", "reason")}})
-    return out
-
-
-def home_page(creds: tuple, params: dict) -> list[dict]:
-    with mastodon_client(creds[0], creds[1]) as http:
-        return list(reversed(http.get("/api/v1/timelines/home", params=params).raise_for_status().json()))
-
+# ── The timeline ─────────────────────────────────────────────────────────────
 
 def after(conn, profile: Profile, since: str | None, limit: int = 40) -> dict:
-    """Entries newer than `since`, oldest first. `cursor` is the newest
-    timeline id covered (hidden posts and articles included), to ask from next
-    time; `end` means there's nothing newer yet."""
-    creds = people.mastodon(conn, profile.user)
-    arts_all = articles(profile.user)
-    if not creds:
-        # Articles only: the whole list is here, so a page is the next `limit`.
-        arts = [dict(a) for a in arts_all if num(a["id"]) > num(since)][:limit]
-        cursor = arts[-1]["id"] if arts else since
-        return {"items": annotate(conn, profile.user, arts), "cursor": cursor, "end": len(arts) < limit}
-    page = home_page(creds, {"limit": limit, **({"min_id": since} if since else {})})
-    lo = num(since) if since else (num(page[0]["id"]) - 1 if page else 0)
-    hi = num(page[-1]["id"]) if page else None
-    arts = [dict(a) for a in arts_all if num(a["id"]) > lo and (hi is None or num(a["id"]) <= hi)]
-    entries = sorted(statuses(conn, profile, creds, page) + arts, key=lambda e: num(e["id"]))
-    # The cursor covers everything returned, articles included: when there are
-    # no new posts, articles newer than the last one must not come back on the
-    # next check. (Safe: every article's id is a time already passed.)
-    covered = ([num(page[-1]["id"])] if page else []) + [num(a["id"]) for a in arts] + ([num(since)] if since else [])
-    cursor = str(max(covered)) if covered else since
-    return {"items": annotate(conn, profile.user, entries), "cursor": cursor, "end": not page}
+    """Entries newer than `since`, oldest first. `cursor` is the newest id
+    covered, to ask from next time; `end` means there's nothing newer yet."""
+    arts = [dict(a) for a in articles(profile.user) if num(a["id"]) > num(since)][:limit]
+    cursor = arts[-1]["id"] if arts else since
+    return {"items": annotate(conn, profile.user, arts), "cursor": cursor, "end": len(arts) < limit}
 
 
 def before(conn, profile: Profile, until: str, limit: int = 20) -> dict:
     """Entries older than `until`, oldest first. `cursor` is the oldest id
     covered; `end` means you've reached the start of the timeline."""
-    creds = people.mastodon(conn, profile.user)
-    arts_all = articles(profile.user)
-    if not creds:
-        arts = [dict(a) for a in arts_all if num(a["id"]) < num(until)][-limit:]
-        return {"items": annotate(conn, profile.user, arts), "cursor": arts[0]["id"] if arts else until, "end": len(arts) < limit}
-    page = home_page(creds, {"limit": limit, "max_id": until})
-    if not page:
-        return {"items": [], "cursor": until, "end": True}
-    lo, hi = num(page[0]["id"]), num(until)
-    arts = [dict(a) for a in arts_all if lo <= num(a["id"]) < hi]
-    entries = sorted(statuses(conn, profile, creds, page) + arts, key=lambda e: num(e["id"]))
-    return {"items": annotate(conn, profile.user, entries), "cursor": page[0]["id"], "end": False}
+    arts = [dict(a) for a in articles(profile.user) if num(a["id"]) < num(until)][-limit:]
+    return {"items": annotate(conn, profile.user, arts), "cursor": arts[0]["id"] if arts else until, "end": len(arts) < limit}
 
 
 def latest_id(conn, user: str) -> str | None:
     """The newest timeline id there is for this reader (for "mark everything read")."""
-    ids = [num(a["id"]) for a in articles(user)[-1:]]
-    creds = people.mastodon(conn, user)
-    if creds:
-        ids += [num(p["id"]) for p in home_page(creds, {"limit": 1})]
-    return str(max(ids)) if ids else None
+    last = articles(user)[-1:]
+    return last[0]["id"] if last else None
 
 
 def thread(conn, user: str, status_id: str) -> dict:

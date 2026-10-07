@@ -1,8 +1,8 @@
-"""A reader's own Mastodon home timeline, as one more of their sources. The
-reader app asks about the posts it's about to show; posts the curator hasn't
-seen are fetched with the reader's token, judged and grouped into stories on
-the spot. A post shows when its story clears the bar (the home timeline has
-a lower one), merging with any other coverage of the same story."""
+"""A reader's own Mastodon home timeline is just another of their sources,
+collected every cycle. This is for a post the reader acts on by its Mastodon
+id (a vote on one of their Mastodon bookmarks): one the curator hasn't seen
+is fetched with the reader's token, judged and grouped into a story on the
+spot."""
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -13,7 +13,6 @@ from curator.canon import item_id
 from curator.collect import conversation_root, from_status, has_link_card, mastodon_client
 from curator.judge import apply_shared_rules, judge_for
 from curator.people import Profile
-from curator.publish import margins, reason
 from curator.stories import ingest
 from curator.traits import judge_traits
 
@@ -84,52 +83,6 @@ def repoint(conn, user: str, ids: list[str]) -> None:
         if (iid := item_id(url)) in wanted:
             conn.execute("UPDATE home_posts SET item_id = ? WHERE user = ? AND status_id = ?", (target, user, wanted.pop(iid)))
     conn.commit()
-
-
-def verdicts(conn, profile: Profile, ids: list[str]) -> dict[str, dict]:
-    """status id → {show, lane, item, story, reason, also}. Unknown or
-    unjudgeable posts get show=True: when in doubt, the timeline wins."""
-    user = profile.user
-    ids = [str(i) for i in ids][:80]
-    learn(conn, profile, ids)
-    repoint(conn, user, ids)
-    src = profile.sources
-    main = people.decider(conn, user)
-    other = "local" if main == "jev" else "jev"
-    out = {}
-    rows = conn.execute(
-        f"""SELECT h.status_id, i.id, i.story_id, i.rule, i.sample, j.rule AS my_rule, j.jev, j.local, j.jev_score, j.local_score
-            FROM home_posts h LEFT JOIN items i ON i.id = h.item_id
-            LEFT JOIN judgments j ON j.item_id = i.id AND j.user = h.user
-            WHERE h.user = ? AND h.status_id IN ({','.join('?' * len(ids))})""", (user, *ids)).fetchall()
-    for r in rows:
-        if not r["id"]:
-            out[r["status_id"]] = {"show": False, "lane": "drop", "why": "not judged (e.g. not in English)"}
-            continue
-        if r["rule"] or r["my_rule"]:
-            out[r["status_id"]] = {"show": False, "lane": "drop", "why": r["rule"] or r["my_rule"], "item": r["id"]}
-            continue
-        story = {"story": r["story_id"]}
-        margins(conn, user, [story], src["min_score"], src["source_floors"])
-        passes = lambda kind: story["margin_" + kind] is not None and story["margin_" + kind] >= 0
-        if passes(main):
-            lane = "main"
-        elif passes(other) or r["sample"]:
-            lane = "maybe"
-        else:
-            lane = "drop"
-        also = [dict(a) for a in conn.execute(
-            "SELECT url, title, source FROM items WHERE story_id = ? AND id != ? AND source NOT LIKE 'mastodon:home:%' AND rule IS NULL",
-            (r["story_id"], r["id"]))]
-        scores = {"jev": r["jev_score"], "local": r["local_score"]}
-        out[r["status_id"]] = {
-            "show": lane != "drop", "lane": lane, "item": r["id"], "story": r["story_id"],
-            "score": scores[main], "also": also,
-            "reason": reason({"jev": r["jev"], "local": r["local"], "story_jev": r["jev_score"], "story_local": r["local_score"]}),
-        }
-    for sid in ids:
-        out.setdefault(sid, {"show": True, "lane": "unknown"})
-    return out
 
 
 def item_for_status(conn, profile: Profile, status_id: str) -> str | None:

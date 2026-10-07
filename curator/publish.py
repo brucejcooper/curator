@@ -138,10 +138,13 @@ def reason(story: dict) -> str:
 
 
 def also(conn, story: dict) -> list[dict]:
+    """The story's other coverage: its other items, and everywhere else any
+    of its items was seen (a hashtag post also in your home timeline)."""
     rows = conn.execute(
         """SELECT url, title, source FROM items WHERE story_id = ? AND id != ?
-           UNION SELECT url, NULL, source FROM sightings WHERE item_id = ? AND source != ?""",
-        (story["story"], story["id"], story["id"], story["source"]),
+           UNION SELECT sg.url, NULL, sg.source FROM sightings sg JOIN items i ON i.id = sg.item_id
+                 WHERE i.story_id = ? AND sg.source != i.source""",
+        (story["story"], story["id"], story["story"]),
     ).fetchall()
     return [dict(r) for r in rows]
 

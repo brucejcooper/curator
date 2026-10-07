@@ -88,3 +88,16 @@ def test_connecting_doesnt_wait_for_a_writer(db):
     reader.execute("SELECT count(*) FROM items").fetchone()
     assert time.monotonic() - started < 1
     writer.rollback()
+
+
+def test_a_storys_other_coverage_includes_where_any_of_its_items_was_seen(db):
+    from curator.publish import also
+
+    rows = [("lead", "https://bsky.app/p/1", "bluesky:#x"), ("post", "https://m.example/@a/1", "mastodon:#x")]
+    db.executemany("INSERT INTO items (id, url, canonical, title, summary, source, published, fetched, story_id) "
+                   "VALUES (?, ?, '', 'Hi', '', ?, '', '', 's')", rows)
+    db.executemany("INSERT INTO sightings VALUES (?, ?, ?, '')",
+                   [("lead", "bluesky:#x", "https://bsky.app/p/1"), ("post", "mastodon:#x", "https://m.example/@a/1"),
+                    ("post", "mastodon:home:alex", "https://m.example/@a/1")])
+    got = {a["source"] for a in also(db, {"story": "s", "id": "lead", "source": "bluesky:#x"})}
+    assert got == {"mastodon:#x", "mastodon:home:alex"}

@@ -13,14 +13,6 @@ from curator.auth import User
 from curator.publish import feed_folder
 
 
-def toot(sid, text="hello there", acct_id="other"):
-    return {"id": sid, "created_at": "2026-10-02T00:00:00Z", "content": f"<p>{text}</p>", "account": {"id": acct_id, "acct": "x"},
-            "mentions": [], "reblog": None, "visibility": "public", "language": "en", "url": f"https://x/{sid}"}
-
-
-HOME = [toot("1000"), toot("1002"), toot("1004", acct_id="me"), toot("1006")]
-
-
 def write_feed(user, items):
     folder = feed_folder(user)
     folder.mkdir(parents=True, exist_ok=True)
@@ -37,27 +29,11 @@ def client(db, alex, monkeypatch):
     users = {"tok-alex": User("alex", "Alex"), "tok-sam": User("sam", "Sam")}
     monkeypatch.setattr(server, "user_from_token", lambda t: users.get(t))
     people.set_mastodon(db, "alex", "m.example", "masto-token", "me")
-    pages = []
-
-    def home_page(creds, params):
-        pages.append(creds)
-        posts = HOME
-        if params.get("min_id"):
-            posts = [s for s in posts if int(s["id"]) > int(params["min_id"])]
-        if params.get("max_id"):
-            posts = [s for s in posts if int(s["id"]) < int(params["max_id"])]
-        return posts[: int(params.get("limit", 40))]
-
-    monkeypatch.setattr(reader, "home_page", home_page)
-    # 1002 misses the bar; the rest show. (Your own post, 1004, isn't even asked about.)
-    monkeypatch.setattr(reader, "verdicts", lambda conn, p, ids: {i: {"show": i != "1002", "lane": "main", "item": f"item-{i}", "also": []} for i in ids})
     write_feed("alex", [art("art-a", "1001"), art("art-b", "1005"), art("art-home", "1003", "mastodon:home:alex"), art("art-new", "2000")])
     db.executemany("INSERT INTO items (id, url, canonical, title, summary, source, published, fetched) VALUES (?, '', '', '', '', '', '', '')",
                    [("art-a",), ("art-b",)])
     db.commit()
-    c = TestClient(server.app)
-    c.pages = pages
-    return c
+    return TestClient(server.app)
 
 
 def auth(who="alex"):
@@ -74,25 +50,16 @@ def test_sign_in_required_and_onboarding_first(client):
     assert client.get("/api/timeline", headers=auth("sam")).json() == {"error": "onboarding"}
 
 
-def test_timeline_merges_by_id_and_filters(client):
-    page = client.get("/api/timeline?after=999", headers=auth()).json()
-    assert [e["id"] for e in page["items"]] == ["1000", "1001", "1004", "1005", "1006"]
-    assert page["cursor"] == "1006" and page["end"] is False
-    assert client.pages[0][1] == "masto-token", "Alex's own Mastodon token"
-    # Caught up: articles newer than every post come at the end, once.
-    tail = client.get("/api/timeline?after=1006", headers=auth()).json()
-    assert [e["id"] for e in tail["items"]] == ["2000"] and tail["end"] is True and tail["cursor"] == "2000"
-    assert client.get(f"/api/timeline?after={tail['cursor']}", headers=auth()).json()["items"] == []
-    older = client.get("/api/timeline?before=1004", headers=auth()).json()
-    assert [e["id"] for e in older["items"]] == ["1000", "1001"]
-
-
-def test_without_mastodon_the_timeline_is_articles(client, db):
-    people.set_mastodon(db, "alex", None, None, None)
-    page = client.get("/api/timeline?after=0&limit=2", headers=auth()).json()
-    assert [e["id"] for e in page["items"]] == ["1001", "1005"] and page["end"] is False
+def test_the_timeline_is_the_curated_feed(client):
+    # Alex's Mastodon home timeline is just another source: a post from it is
+    # a story in the feed like any other, shown once.
+    page = client.get("/api/timeline?after=999&limit=2", headers=auth()).json()
+    assert [e["id"] for e in page["items"]] == ["1001", "1003"] and page["end"] is False
     rest = client.get(f"/api/timeline?after={page['cursor']}&limit=2", headers=auth()).json()
-    assert [e["id"] for e in rest["items"]] == ["2000"] and rest["end"] is True
+    assert [e["id"] for e in rest["items"]] == ["1005", "2000"] and rest["cursor"] == "2000"
+    assert client.get("/api/timeline?after=2000", headers=auth()).json() == {"items": [], "cursor": "2000", "end": True}
+    older = client.get("/api/timeline?before=1005", headers=auth()).json()
+    assert [e["id"] for e in older["items"]] == ["1001", "1003"] and older["end"] is True
 
 
 def test_position_only_moves_forward_and_is_per_reader(client, db):

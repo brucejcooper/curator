@@ -367,6 +367,7 @@ function voteButtons(article, current, onVote) {
 export function sourceLabel(source) {
   const [kind, rest = ''] = (source || '').split(/:(.*)/s);
   if (kind === 'rss') return rest;
+  if (kind === 'mastodon' && rest.startsWith('home:')) return 'your Mastodon timeline';
   if (kind === 'mastodon') return /^[#@]/.test(rest) ? `${rest} on Mastodon` : 'Mastodon';
   if (kind === 'bluesky') return `${rest} on Bluesky`;
   return source;

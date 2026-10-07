@@ -104,11 +104,11 @@ the daily revision keeps.
 
 ## The reader app
 
-One timeline, oldest to newest from where you left off, merging your Mastodon
-home timeline (filtered) with the curated articles. Mastodon ids are
-milliseconds << 16 and curated stories get an id in the same space from when
-they were first seen, so both sort together and one reading position covers
-both. The position is kept on the server and only moves forward, so devices
+One timeline, oldest to newest from where you left off: the stories the
+curator picked. Your Mastodon home timeline is just another source (with a
+lower bar), so a post in it that's also elsewhere is one story, shown once.
+Stories get a Mastodon-style id (milliseconds << 16) from when they were
+first seen. The position is kept on the server and only moves forward, so devices
 can't undo each other's progress. The app never talks to Mastodon itself;
 replying and boosting happen on your server ("See original").
 
