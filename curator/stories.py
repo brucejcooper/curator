@@ -11,6 +11,7 @@ from functools import lru_cache
 import numpy as np
 
 from curator import store
+from curator.articles import fill_text, needs_text
 from curator.canon import canonical_url, item_id, title_key
 
 log = logging.getLogger(__name__)
@@ -167,6 +168,9 @@ def ingest(conn, found: list[dict]) -> list[str]:
         fresh.append(it)
         titles[title_key(it["title"])] = iid
 
+    if any(needs_text(it) for it in fresh):
+        conn.commit()  # don't hold the write lock while fetching articles
+        fill_text(fresh)
     vectors = embed([text_of(it) for it in fresh])
     touched: set[str] = set()
     grey: list[tuple[str, str]] = []  # (new item, earlier item) for Jev to settle

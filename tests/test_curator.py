@@ -295,3 +295,20 @@ def test_single_reader_database_moves_to_the_owner(tmp_path, monkeypatch):
     assert rows("SELECT source FROM sightings") == [("mastodon:home:owner",)]
     assert rows("SELECT user, item_id, jev_score, local_score FROM judgments") == [("owner", "i1", 0.8, 0.6)]
     assert json.loads(conn.execute("SELECT traits FROM items").fetchone()[0]) == {"news": {"noul": 0.9}}
+
+
+def test_items_without_text_get_the_articles_first_paragraphs():
+    from curator.articles import extract, needs_text
+
+    para = "A paragraph long enough to count as the article's own text, not a caption. "
+    html = (f"<html><head><meta property='og:description' content='The description'></head><body>"
+            f"<nav><p>{para}Menu</p></nav><p>{para}Outside the article.</p>"
+            f"<article><p>By someone</p><p>{para}One.</p><p>{para}Here's how:</p><p>{para}Two.</p>"
+            f"<figure><p>{para}Caption.</p></figure><p>{para}Three.</p><p>{para}Four.</p></article></body></html>")
+    assert extract(html).split("\n\n") == [para + "One.", para + "Two.", para + "Three."]
+    assert extract("<html><head><meta name='description' content='Only this'></head><body><p>Short.</p></body></html>") == "Only this"
+    hn = {"source": "rss:Hacker News Best", "url": "https://example.org/a",
+          "summary": "Article URL: https://example.org/a\n\nComments URL: https://news.ycombinator.com/item?id=1\n\nPoints: 9\n\n# Comments: 2"}
+    assert needs_text(hn)
+    assert not needs_text({**hn, "summary": "A real standfirst that says what the story is about, at some length."})
+    assert not needs_text({**hn, "source": "mastodon:#homelab"})
