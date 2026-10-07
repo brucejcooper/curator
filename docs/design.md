@@ -13,8 +13,9 @@ picks what each reader would want, learning from what they actually read.
    and each connected reader's own Mastodon home timeline. A reply stands for
    its conversation: the conversation's first post is what gets judged.
    A feed item that comes with no text of its own (Hacker News' is just
-   links and points) gets the article's first few paragraphs and picture,
-   fetched once when it's new.
+   links and points) or only a teaser ("… more…", "[…]") gets the
+   article's first few paragraphs and picture, fetched once when it's new;
+   a teaser's opening line is kept.
 2. **Resolve the story.** Identical links (tracking parameters stripped) and
    near-identical titles become one item, with every place it was seen
    recorded. Items get a local embedding (`bge-small`, on the CPU); items from

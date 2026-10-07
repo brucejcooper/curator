@@ -307,8 +307,25 @@ def test_items_without_text_get_the_articles_first_paragraphs():
             f"<figure><p>{para}Caption.</p></figure><p>{para}Three.</p><p>{para}Four.</p></article></body></html>")
     assert extract(html).split("\n\n") == [para + "One.", para + "Two.", para + "Three."]
     assert extract("<html><head><meta name='description' content='Only this'></head><body><p>Short.</p></body></html>") == "Only this"
-    hn = {"source": "rss:Hacker News Best", "url": "https://example.org/a",
+    hn = {"source": "rss:Hacker News Best", "url": "https://example.org/a", "title": "A story",
           "summary": "Article URL: https://example.org/a\n\nComments URL: https://news.ycombinator.com/item?id=1\n\nPoints: 9\n\n# Comments: 2"}
     assert needs_text(hn)
     assert not needs_text({**hn, "summary": "A real standfirst that says what the story is about, at some length."})
     assert not needs_text({**hn, "source": "mastodon:#homelab"})
+
+
+def test_bare_summaries_and_teasers_are_told_apart():
+    from curator.articles import needs_text, teaser, with_teaser
+
+    it = lambda summary, title="Polars 2.0 ships": {"source": "rss:X", "url": "https://example.org/a", "title": title, "summary": summary}
+    assert needs_text(it("Polars 2.0 ships"))  # repeats the title
+    assert needs_text(it("submitted by /u/someone [link] [comments]"))
+    assert not needs_text(it("Two cargo ships have sunk, one ship was afire, and sailors are dead or missing."))
+    cut = it("Apple is rolling out the third beta of macOS 27.2. Here's what's coming. more…")
+    assert needs_text(cut) and teaser(cut)
+    assert not teaser(it("x " * 400 + "[…] The post Y appeared first on CNX Software."))  # long: real text already
+    article = "The full first paragraph, about the third beta of macOS 27.2, and what's in it.\n\nThe second."
+    # The teaser's full paragraph is in the article: just the article.
+    assert with_teaser("The full first paragraph, about the third beta […]", article) == article
+    # A standfirst that isn't in the article comes first.
+    assert with_teaser("Apple ships another beta. more…", article) == "Apple ships another beta.\n\n" + article

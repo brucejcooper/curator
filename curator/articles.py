@@ -1,8 +1,9 @@
-"""Text for feed items that came without any: the article's first few
-paragraphs (or its description) and its preview image, fetched once when the
-item is new, so the reader, the story grouping and Jev all have something to
-go on. Hacker News' feed is the usual case: its summary is only the links and
-points."""
+"""Text for feed items that came with little or none: the article's first
+few paragraphs (or its description) and its preview image, fetched once when
+the item is new, so the reader, the story grouping and Jev all have something
+to go on. Two kinds: bare (Hacker News: only links and points; a summary that
+repeats the title; "[link] [comments]") and teasers cut off with "more…" or
+"[…]" (9to5Mac, The Verge, Hackaday), whose opening line is kept."""
 
 import logging
 import re
@@ -16,7 +17,14 @@ from curator.images import POST_URL, preview_image
 
 log = logging.getLogger(__name__)
 HN = re.compile(r"^Article URL: \S+\s+Comments URL: (\S+)\s+Points: \d+\s+# Comments: \d+$")
-THIN = 60  # a summary shorter than this (after the boilerplate) says nothing
+URL = re.compile(r"https?://\S+")
+WORD = re.compile(r"[^\W\d_]{3,}")
+FURNITURE = set("article url comments comment points read more continue reading link submitted via".split())
+BARE = 3  # fewer words than this beyond the title, links and furniture: says nothing
+# A teaser: cut off with a marker, and short. (CNX Software's footer follows
+# 1,000+ characters of real text; that isn't one.)
+CUT = re.compile(r"\s*(\bmore…|\bmore\.\.\.|\[…\]|\[\.\.\.\]|…\s*read more|\bcontinue reading\b.*|\bread more\b.*)\s*$", re.I)
+TEASER = 600
 WANT = 900  # enough text for a few paragraphs
 MAX_PARAGRAPHS = 3
 MIN_PARAGRAPH = 60  # shorter <p>s are bylines, captions, "Share this"
@@ -74,19 +82,51 @@ def extract(html: str) -> str:
         parser.feed(html)
     except Exception:  # malformed pages: keep what was parsed
         pass
-    out, size = [], 0
+    out, size, seen = [], 0, set()
     for p in parser.inside or parser.all:
         if size >= WANT or len(out) == MAX_PARAGRAPHS:
             break
+        if key(p) in seen:  # a subtitle repeated in the page
+            continue
+        seen.add(key(p))
         out.append(p)
         size += len(p)
     return "\n\n".join(out) or unescape(parser.description)
 
 
+def own_words(it: dict) -> list[str]:
+    """The summary's words that aren't in the title, links or furniture."""
+    title = {w.lower() for w in WORD.findall(it["title"])}
+    return [w for w in WORD.findall(URL.sub(" ", it["summary"])) if w.lower() not in title | FURNITURE]
+
+
+def bare(it: dict) -> bool:
+    return len(own_words(it)) < BARE
+
+
+def teaser(it: dict) -> bool:
+    return bool(CUT.search(it["summary"])) and len(it["summary"]) < TEASER
+
+
 def needs_text(it: dict) -> bool:
     if not it["source"].startswith("rss:") or POST_URL.match(it["url"]):
         return False
-    return len(HN.sub("", it["summary"]).strip()) < THIN
+    return bare(it) or teaser(it)
+
+
+def key(text: str) -> str:
+    return " ".join(WORD.findall(text.lower()))
+
+
+def with_teaser(lead: str, text: str) -> str:
+    """The teaser's opening line, then the article's paragraphs; just the
+    paragraphs if the first one is the teaser in full."""
+    lead = CUT.sub("", lead).rstrip(" …")
+    paragraphs = text.split("\n\n")
+    start = key(lead)[:80]
+    if start and any(key(p).startswith(start) for p in paragraphs):
+        return text
+    return "\n\n".join([lead] + paragraphs)
 
 
 def fetch(http: httpx.Client, url: str) -> tuple[str, str]:
@@ -108,7 +148,8 @@ def fetch(http: httpx.Client, url: str) -> tuple[str, str]:
 
 def fill_text(items: list[dict]) -> None:
     """Fills in `summary` (and `image`, if missing) for the items whose feed
-    gave no text. Keeps a Hacker News item's discussion link."""
+    gave little or no text. Keeps a Hacker News item's discussion link; a
+    teaser stays as it was if the article can't be read."""
     todo = [it for it in items if needs_text(it)]
     if not todo:
         return
@@ -119,9 +160,10 @@ def fill_text(items: list[dict]) -> None:
         found = list(pool.map(lambda it: fetch(http, it["url"]), todo))
     for it, (text, image) in zip(todo, found):
         hn = HN.match(it["summary"].strip())
-        discussion = f"Discussion: {hn.group(1)}" if hn else ""
-        if text or hn:
-            it["summary"] = "\n\n".join(x for x in (text, discussion) if x)
+        if hn:
+            it["summary"] = "\n\n".join(x for x in (text, f"Discussion: {hn.group(1)}") if x)
+        elif text:  # the feed's own line, if it has one, comes first
+            it["summary"] = with_teaser(it["summary"], text) if own_words(it) else text
         if image and not it.get("image"):
             it["image"] = image
-    log.info("fetched text for %d items without any, found %d", len(todo), sum(bool(t) for t, _ in found))
+    log.info("fetched text for %d items with little or none, found %d", len(todo), sum(bool(t) for t, _ in found))
