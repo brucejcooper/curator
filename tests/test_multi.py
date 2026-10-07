@@ -72,3 +72,19 @@ def test_the_owner_moves_in_with_their_profile_history(db, tmp_path, monkeypatch
     assert "birds" in p.profile_md and "rage_bait" not in yaml.safe_load(p.questions_yaml), "item-level questions are shared now"
     assert people.user(db, "owner")["admin"] == 1
     assert people.user_for_feed_path(db, "old-secret-path") == "owner", "the existing feed address keeps working"
+
+
+def test_connecting_doesnt_wait_for_a_writer(db):
+    # The collection cycle may be mid-write; the API must still open and read.
+    import time
+
+    from curator import store
+
+    writer = store.connect()
+    writer.execute("BEGIN IMMEDIATE")
+    writer.execute("INSERT INTO kv VALUES ('busy', '1')")
+    started = time.monotonic()
+    reader = store.connect()
+    reader.execute("SELECT count(*) FROM items").fetchone()
+    assert time.monotonic() - started < 1
+    writer.rollback()

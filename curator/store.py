@@ -83,13 +83,21 @@ CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
 """
 
 
+_ready: set[str] = set()  # databases this process has migrated
+
+
 def connect() -> sqlite3.Connection:
+    """A connection; the first for each database also migrates it and makes
+    the schema. Later ones don't write, so they never wait behind a writer
+    (the collection cycle) just to open."""
     DATA.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB, timeout=30)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    migrate(conn)
-    conn.executescript(SCHEMA)
+    if str(DB) not in _ready:
+        conn.execute("PRAGMA journal_mode=WAL")  # persists in the file
+        migrate(conn)
+        conn.executescript(SCHEMA)
+        _ready.add(str(DB))
     return conn
 
 

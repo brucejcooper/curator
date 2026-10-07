@@ -66,6 +66,7 @@ def rss(conn, http: httpx.Client, feed: dict) -> list[dict]:
         return []
     resp.raise_for_status()
     store.put(conn, key, {"etag": resp.headers.get("etag"), "modified": resp.headers.get("last-modified")})
+    conn.commit()  # don't hold the write lock across the next fetch
     return parse_feed(resp.content, feed["name"], feed.get("always_show", False))
 
 
@@ -148,6 +149,7 @@ def mastodon(conn, http: httpx.Client, path: str, source: str, roots: dict, home
     statuses = resp.json()
     if statuses:
         store.put(conn, key, statuses[0]["id"])
+        conn.commit()  # don't hold the write lock across the next fetch
     items = []
     home = home_map is not None
     for status in statuses:
@@ -169,6 +171,7 @@ def mastodon_account_id(conn, http: httpx.Client, acct: str) -> str | None:
         resp = http.get("/api/v1/accounts/lookup", params={"acct": acct})
         known = resp.json()["id"] if resp.is_success else ""
         store.put(conn, key, known)
+        conn.commit()  # don't hold the write lock across the next fetch
     return known or None
 
 
@@ -236,6 +239,7 @@ def bluesky(conn, http: httpx.Client, tag: str) -> list[dict]:
             items.append(it)
     if posts:
         store.put(conn, key, max(p["record"]["createdAt"] for p in posts))
+        conn.commit()  # don't hold the write lock across the next fetch
     return items
 
 
@@ -268,6 +272,7 @@ def bluesky_person(conn, http: httpx.Client, handle: str) -> list[dict]:
     posts = [p for p in posts if p.get("record", {}).get("createdAt", "") > last]
     if posts:
         store.put(conn, key, max(p["record"]["createdAt"] for p in posts))
+        conn.commit()  # don't hold the write lock across the next fetch
     return [it for p in posts if (it := from_bsky(p, f"bluesky:@{handle}"))]
 
 
