@@ -56,6 +56,7 @@ MIN_MARGIN = 0.05  # and the typical hit clears the bar (hits cluster just above
 MIN_NOVELTY = 0.5  # and most of those are stories the reader doesn't already get
 FLAWS = ("rage_bait", "advert", "hype", "chatter", "generic_howto")  # an item with any of these isn't a hit
 SAMPLE = 20  # recent items judged per candidate
+PAYWALL_CHECKS = 3  # a site's recent articles looked at for a paywall; any one paywalled rules it out
 SAMPLE_AGE = timedelta(days=90)  # long enough that someone who posts weekly has enough to judge
 TRIAL = timedelta(days=7)
 QUIET = timedelta(weeks=12)  # don't re-suggest a dismissed candidate (or one that tested badly) for this long
@@ -177,7 +178,8 @@ areas, active blogs and newsletters with RSS feeds, people worth reading on \
 Mastodon or Bluesky, and hashtags with real discussion. Favour sources that \
 are active (posting in the last month), substantive, and different from what \
 they already follow. Avoid rage bait, SEO content farms, product-deal sites, \
-tutorial mills and anything they said they dislike. Only suggest sources you \
+tutorial mills, paywalled sites (they can't read them) and anything they \
+said they dislike. Only suggest sources you \
 would personally vouch for as outstanding for this reader; each will be \
 tested against their profile and only the genuinely good ones shown. Only \
 give addresses and handles you found in your searches; never guess one. \
@@ -322,6 +324,14 @@ def recent_matrix(conn, profile: Profile) -> np.ndarray:
     return np.stack([store.vec(r[0]) for r in rows]) if rows else np.zeros((0, 384), np.float32)
 
 
+def is_paywalled(http: httpx.Client, items: list[dict]) -> bool:
+    """Whether any of a site's recent articles is marked as paywalled."""
+    from curator.articles import page, paywalled
+
+    urls = [it["url"] for it in items if not is_post(it["url"])][:PAYWALL_CHECKS]
+    return any(paywalled(page(http, u)[0]) for u in urls)
+
+
 def evaluate(conn, profile: Profile, found: dict, known: np.ndarray) -> dict | None:
     """Hit rate, volume and novelty of a candidate's recent items for this reader."""
     from curator.stories import embed, text_of
@@ -429,6 +439,10 @@ def scout(conn, user: str, use_web: bool = True) -> list[int]:
                     continue
                 if (found["kind"], found["value"].lower()) in seen or found["value"].lower() in have_urls:
                     continue
+                if found["kind"] == "rss" and is_paywalled(http, found["items"]):
+                    tested.append((c, found, {"paywalled": True}))
+                    log.info("scout %s: %s is paywalled", user, found["value"])
+                    continue
                 stats = evaluate(conn, profile, found, known)
                 tested.append((c, found, stats))
                 log.info("scout %s: tried %s %s: %s", user, found["kind"], found["value"],
@@ -449,7 +463,9 @@ def scout(conn, user: str, use_web: bool = True) -> list[int]:
         if (c, found, stats) not in good:
             conn.execute("INSERT INTO suggestions (user, kind, value, name, why, evidence, score, status, created, decided) "
                          "VALUES (?, ?, ?, ?, ?, ?, ?, 'dismissed', ?, ?)",
-                         (user, found["kind"], found["value"], found["name"], "tested: not enough for you", json.dumps(stats), 0, now, now))
+                         (user, found["kind"], found["value"], found["name"],
+                          "tested: paywalled" if (stats or {}).get("paywalled") else "tested: not enough for you",
+                          json.dumps(stats), 0, now, now))
     conn.commit()
     log.info("scout %s: %d candidates, %d tested, %d suggested", user, len(unique), len(tested), len(ids))
     return ids
@@ -529,4 +545,4 @@ def listing(conn, user: str) -> dict:
         r["evidence"] = json.loads(r["evidence"] or "{}")
     return {"open": [r for r in rows if r["status"] in ("new", "review")],
             "trying": [r for r in rows if r["status"] == "trial"],
-            "history": [r for r in rows if r["status"] in ("accepted", "dismissed") and r["why"] != "tested: not enough for you"][:50]}
+            "history": [r for r in rows if r["status"] in ("accepted", "dismissed") and not (r["why"] or "").startswith("tested:")][:50]}

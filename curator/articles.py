@@ -25,6 +25,9 @@ BARE = 3  # fewer words than this beyond the title, links and furniture: says no
 # 1,000+ characters of real text; that isn't one.)
 CUT = re.compile(r"\s*(\bmore…|\bmore\.\.\.|\[…\]|\[\.\.\.\]|…\s*read more|\bcontinue reading\b.*|\bread more\b.*)\s*$", re.I)
 TEASER = 600
+# Paywalled publishers mark their article pages so search engines can tell
+# (schema.org): "isAccessibleForFree": false.
+PAYWALL = re.compile(r'"isAccessibleForFree"\s*:\s*"?false\b', re.I)
 WANT = 900  # enough text for a few paragraphs
 MAX_PARAGRAPHS = 3
 MIN_PARAGRAPH = 60  # shorter <p>s are bylines, captions, "Share this"
@@ -129,8 +132,8 @@ def with_teaser(lead: str, text: str) -> str:
     return "\n\n".join([lead] + paragraphs)
 
 
-def fetch(http: httpx.Client, url: str) -> tuple[str, str]:
-    """(text, image) from the article page; empty strings if unreadable."""
+def page(http: httpx.Client, url: str) -> tuple[str, str]:
+    """(html, final url) of an article page; empty strings if unreadable."""
     try:
         with http.stream("GET", url, follow_redirects=True) as resp:
             if not resp.is_success or "html" not in resp.headers.get("content-type", ""):
@@ -140,10 +143,19 @@ def fetch(http: httpx.Client, url: str) -> tuple[str, str]:
                 body += chunk
                 if len(body) > MAX_BYTES:
                     break
-        html = body.decode(resp.encoding or "utf-8", "replace")
-        return extract(html), preview_image(html, str(resp.url)) or ""
+        return body.decode(resp.encoding or "utf-8", "replace"), str(resp.url)
     except (httpx.HTTPError, LookupError):
         return "", ""
+
+
+def fetch(http: httpx.Client, url: str) -> tuple[str, str]:
+    """(text, image) from the article page; empty strings if unreadable."""
+    html, final = page(http, url)
+    return (extract(html), preview_image(html, final) or "") if html else ("", "")
+
+
+def paywalled(html: str) -> bool:
+    return bool(PAYWALL.search(html))
 
 
 def fill_text(items: list[dict]) -> None:

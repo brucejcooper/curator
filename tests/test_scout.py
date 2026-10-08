@@ -169,3 +169,30 @@ def test_the_daily_revision_keeps_new_source_kinds_and_trials():
                LearnedSource(kind="rss", value="https://x/rss", name="X", reason="r", added="2026-10-01")]
     out = yaml.safe_load(render_sources("feed: {}\n", entries))["learned"]
     assert out[0]["trial_until"] == "2026-10-08" and out[1]["name"] == "X" and "trial_until" not in out[1]
+
+
+def test_paywalled_sites_are_ruled_out_before_judging(alex, db, monkeypatch):
+    from curator import articles
+
+    assert articles.paywalled('<script type="application/ld+json">{"isAccessibleForFree": false}</script>')
+    assert articles.paywalled('{"isAccessibleForFree":"False"}')
+    assert not articles.paywalled('{"isAccessibleForFree": true}') and not articles.paywalled("<p>no markup</p>")
+    cands = [{"kind": "site", "value": v, "name": v, "why": "w"} for v in ("walled.example", "open.example")]
+    monkeypatch.setattr(scout, "from_signals", lambda conn, p: cands)
+    monkeypatch.setattr(scout, "from_browsing", lambda conn, p: [])
+    item = lambda site: {"url": f"https://{site}/2026/10/a-story", "title": "t", "summary": "", "published": now()}
+    monkeypatch.setattr(scout, "resolve", lambda conn, http, oh, c: {"kind": "rss", "value": f"https://{c['value']}/rss",
+                                                                     "name": c["name"], "items": [item(c["value"])] * 5})
+    pages = []
+    monkeypatch.setattr(articles, "page", lambda http, url: pages.append(url) or (
+        '{"isAccessibleForFree": false}' if "walled" in url else '{"isAccessibleForFree": true}', url))
+    judged = []
+    good = {"per_day": 3.0, "hit_rate": 0.9, "novelty": 0.8, "useful_per_day": 2, "margin": 0.2, "judged": 10, "samples": [{"title": "t", "url": "u", "score": 0.9}]}
+    monkeypatch.setattr(scout, "evaluate", lambda conn, p, found, known: judged.append(found["value"]) or good)
+    scout.scout(db, "alex", use_web=False)
+    assert judged == ["https://open.example/rss"], "the paywalled site isn't judged at all"
+    assert len(pages) == 1 + scout.PAYWALL_CHECKS  # the walled site's first article rules it out; the open site's are all checked
+    listing = scout.listing(db, "alex")
+    assert [s["value"] for s in listing["open"]] == ["https://open.example/rss"]
+    assert db.execute("SELECT why FROM suggestions WHERE value = 'https://walled.example/rss'").fetchone()[0] == "tested: paywalled"
+    assert not listing["history"], "a site ruled out on paper isn't in the reader's history"
