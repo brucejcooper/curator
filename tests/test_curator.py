@@ -329,3 +329,28 @@ def test_bare_summaries_and_teasers_are_told_apart():
     assert with_teaser("The full first paragraph, about the third beta […]", article) == article
     # A standfirst that isn't in the article comes first.
     assert with_teaser("Apple ships another beta. more…", article) == "Apple ships another beta.\n\n" + article
+
+
+def test_a_quote_post_carries_what_it_quotes():
+    quoted = {"content": "<p>@lrosa @timbray This piece is obviously AI generated, and confirmed as such.</p>",
+              "account": {"acct": "jn@c.im"}, "media_attachments": []}
+    status = {"created_at": "2026-10-08T23:00:00Z", "visibility": "public", "language": "en", "account": {"acct": "tim@cosocial.ca"},
+              "url": "https://cosocial.ca/@tim/1",
+              "content": '<p class="quote-inline">RE: <a href="https://c.im/@jn/2">c.im/@jn/2</a></p><p>That’s twice today.</p>',
+              "quote": {"state": "accepted", "quoted_status": quoted}}
+    it = from_status(status, "mastodon:home:x", home=True)
+    assert it["title"] == "That’s twice today."
+    assert it["summary"] == "That’s twice today.\n\nQuoting @jn@c.im: This piece is obviously AI generated, and confirmed as such."
+    # A quote that can't be shown (pending, removed) leaves the post as it was.
+    assert "RE: c.im/@jn/2" in from_status({**status, "quote": {"state": "deleted", "quoted_status": None}}, "mastodon:home:x", home=True)["summary"]
+
+    from curator.collect import from_bsky
+
+    post = {"uri": "at://did/app.bsky.feed.post/abc", "author": {"handle": "sam.bsky.social"},
+            "record": {"text": "Exactly this.", "createdAt": "2026-10-08T23:00:00Z", "langs": ["en"]},
+            "embed": {"$type": "app.bsky.embed.record#view",
+                      "record": {"author": {"handle": "ana.bsky.social"}, "value": {"text": "Our new paper on soil carbon is out today, after four years of fieldwork."}}}}
+    it = from_bsky(post, "bluesky:#x")
+    assert it["title"] == "Exactly this." and it["summary"].endswith("Quoting @ana.bsky.social: Our new paper on soil carbon is out today, after four years of fieldwork.")
+    wrapped = {**post, "embed": {"$type": "app.bsky.embed.recordWithMedia#view", "media": {"images": []}, "record": {"record": post["embed"]["record"]}}}
+    assert from_bsky(wrapped, "bluesky:#x")["summary"] == it["summary"]

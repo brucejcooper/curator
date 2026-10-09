@@ -12,6 +12,7 @@ picks what each reader would want, learning from what they actually read.
    and Bluesky hashtags (each fetched once, however many readers follow it),
    and each connected reader's own Mastodon home timeline. A reply stands for
    its conversation: the conversation's first post is what gets judged.
+   A quote post carries the text of the post it quotes.
    A feed item that comes with no text of its own (Hacker News' is just
    links and points) or only a teaser ("… more…", "[…]") gets the
    article's first few paragraphs and picture, fetched once when it's new;

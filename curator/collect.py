@@ -100,6 +100,33 @@ def has_link_card(s: dict) -> bool:
     return bool(card.get("url")) and card.get("type") == "link"
 
 
+# A quote post makes no sense without what it quotes. Mastodon sends the
+# quoted post along (`quote.quoted_status`) and puts a "RE: <link>" fallback
+# paragraph in the text for apps that can't show it; Bluesky embeds the
+# quoted record. The quoted text comes after the post's own, so the reader,
+# the story grouping and Jev all see it.
+QUOTE_INLINE = re.compile(r'<p class="quote-inline">.*?</p>', re.I | re.S)
+LEADING_MENTIONS = re.compile(r"^(?:@[\w.@-]+\s+)+")
+
+
+def quoting(author: str, text: str) -> str:
+    text = LEADING_MENTIONS.sub("", text).strip()  # a reply's addressees
+    return f"Quoting {author}: {text}" if text else ""
+
+
+def mastodon_quote(s: dict) -> tuple[str, str | None]:
+    """("Quoting @who: ...", its picture) for a quote post, else ("", None)."""
+    q = (s.get("quote") or {}).get("quoted_status")
+    if not q:
+        return "", None
+    text = plain(QUOTE_INLINE.sub("", q.get("content") or ""))
+    media = q.get("media_attachments") or []
+    if not text:
+        text = " ".join(m.get("description") or "" for m in media).strip()
+    photo = next((m.get("preview_url") or m.get("url") for m in media if m.get("type") in ("image", "gifv")), None)
+    return quoting("@" + q["account"]["acct"], text), photo
+
+
 def from_status(s: dict, source: str, home: bool = False) -> dict | None:
     """The linked article if the post has one, else the post itself. For your
     own home timeline (`home`), followers-only, content-warned and short posts
@@ -110,18 +137,20 @@ def from_status(s: dict, source: str, home: bool = False) -> dict | None:
     if (s.get("language") or "en") != "en":
         return None
     published = datetime.fromisoformat(s["created_at"].replace("Z", "+00:00"))
-    text = plain(s.get("content"))
-    if home and not text:  # a photo post: judge it by its descriptions
+    quote, quote_photo = mastodon_quote(s)
+    text = plain(QUOTE_INLINE.sub("", s.get("content") or "") if quote else s.get("content"))
+    if home and not text and not quote:  # a photo post: judge it by its descriptions
         text = " ".join(m.get("description") or "" for m in s.get("media_attachments") or []).strip() or "(a photo)"
+    full = "\n\n".join(x for x in (text, quote) if x)
     author = "@" + s["account"]["acct"]
     card = s.get("card") or {}
-    photo = next((m.get("preview_url") or m.get("url") for m in s.get("media_attachments") or [] if m.get("type") in ("image", "gifv")), None)
+    photo = next((m.get("preview_url") or m.get("url") for m in s.get("media_attachments") or [] if m.get("type") in ("image", "gifv")), quote_photo)
     if has_link_card(s):
-        return item(card["url"], card.get("title") or short_title(text), f"{card.get('description', '')}\n\n{author}: {text}",
+        return item(card["url"], card.get("title") or short_title(text or full), f"{card.get('description', '')}\n\n{author}: {full}",
                     source, author, published, image=card.get("image") or photo)
-    if len(text) < 80 and not home:
+    if len(full) < 80 and not home:
         return None
-    return item(s.get("url") or s["uri"], short_title(text), text, source, author, published, image=photo)
+    return item(s.get("url") or s["uri"], short_title(text or full), full, source, author, published, image=photo)
 
 
 def mastodon_client(server: str, token: str) -> httpx.Client:
@@ -199,14 +228,19 @@ def from_bsky(p: dict, source: str) -> dict | None:
     media = embed.get("media") or embed  # recordWithMedia wraps the media
     ext = media.get("external") or {}
     photo = next((i.get("thumb") or i.get("fullsize") for i in media.get("images") or []), None)
+    quoted = embed.get("record") or {}
+    quoted = quoted.get("record", quoted) if "value" not in quoted else quoted  # recordWithMedia wraps the record too
+    quote = quoting("@" + quoted["author"]["handle"], quoted["value"].get("text", "")) \
+        if isinstance(quoted.get("value"), dict) and quoted.get("author") else ""
+    full = "\n\n".join(x for x in (text, quote) if x)
     if ext.get("uri"):
-        return item(ext["uri"], ext.get("title") or short_title(text), f"{ext.get('description', '')}\n\n{author}: {text}",
+        return item(ext["uri"], ext.get("title") or short_title(text or full), f"{ext.get('description', '')}\n\n{author}: {full}",
                     source, author, published, image=ext.get("thumb") or photo)
-    if len(text) < 80:
+    if len(full) < 80:
         return None
     rkey = p["uri"].rsplit("/", 1)[-1]
-    return item(f"https://bsky.app/profile/{p['author']['handle']}/post/{rkey}", short_title(text), text, source, author, published,
-                image=photo)
+    return item(f"https://bsky.app/profile/{p['author']['handle']}/post/{rkey}", short_title(text or full), full, source, author,
+                published, image=photo)
 
 
 def bluesky_posts(http: httpx.Client, uris: list[str]) -> dict[str, dict]:
