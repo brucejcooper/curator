@@ -183,6 +183,7 @@ def json_feed(conn, stories: list[dict], title: str, feed_url: str) -> dict:
                 "source": s["source"],
                 "trial": s.get("story_trial"),
                 "also": others,
+                **({"quote": json.loads(s["quote"])} if s.get("quote") else {}),
             },
         })
     return {"version": "https://jsonfeed.org/version/1.1", "title": title, "home_page_url": SITE,

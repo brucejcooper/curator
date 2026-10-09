@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS items (
   rule TEXT,                    -- a rule that drops it for everyone (language, hashtag soup)
   traits TEXT,                  -- Jev's answers to the reader-independent questions (traits.py)
   sample INTEGER DEFAULT 0,     -- picked for the maybe lane's random sample
-  image TEXT                    -- picture URL; '' once looked for and none found
+  image TEXT,                   -- picture URL; '' once looked for and none found
+  quote TEXT                    -- JSON: the post a quote post quotes {author, name, text, url, image}
 );
 CREATE INDEX IF NOT EXISTS items_fetched ON items(fetched);
 CREATE INDEX IF NOT EXISTS items_story ON items(story_id);
@@ -115,6 +116,8 @@ def migrate(conn: sqlite3.Connection) -> None:
         cols = columns(conn, "items")
         if "image" not in cols:
             conn.execute("ALTER TABLE items ADD COLUMN image TEXT")
+        if "quote" not in cols:
+            conn.execute("ALTER TABLE items ADD COLUMN quote TEXT")
         if "traits" not in cols:
             conn.execute("ALTER TABLE items ADD COLUMN traits TEXT")
             if "jev" in cols:

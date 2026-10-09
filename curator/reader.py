@@ -24,6 +24,13 @@ def num(i: str | None) -> int:
     return int(i) if i else 0
 
 
+def without_quote(summary: str, quote: dict | None) -> str:
+    """The text without the quoted post's paragraph, which the app shows in
+    a box of its own."""
+    line = f"Quoting {quote['author']}: {quote['text']}" if quote and quote.get("text") else ""
+    return summary.removesuffix(line).rstrip() if line and summary.endswith(line) else summary
+
+
 # ── Curated articles (from the reader's published feed) ─────────────────────
 
 def articles(user: str) -> list[dict]:
@@ -42,7 +49,8 @@ def articles(user: str) -> list[dict]:
                 continue
             out.append({
                 "kind": "article", "id": c["sort_id"], "item": it["id"], "url": it["url"], "title": it["title"],
-                "summary": it.get("content_text") or "", "image": it.get("image"), "published": it.get("date_published"),
+                "summary": without_quote(it.get("content_text") or "", c.get("quote")), "quote": c.get("quote"),
+                "image": it.get("image"), "published": it.get("date_published"),
                 "author": (it.get("authors") or [{}])[0].get("name") or "", "source": c.get("source", ""),
                 "lane": c.get("lane", "main"), "reason": c.get("reason") or "", "also": c.get("also") or [],
                 "trial": c.get("trial"),
@@ -128,11 +136,12 @@ def bookmarks(conn, user: str) -> dict:
     """The reader's bookmarks, newest first, and their Mastodon bookmarks if
     they've connected Mastodon."""
     rows = conn.execute(
-        """SELECT i.id, i.url, i.title, i.summary, i.image, i.source, i.published, i.author
+        """SELECT i.id, i.url, i.title, i.summary, i.image, i.source, i.published, i.author, i.quote
            FROM user_bookmarks b JOIN items i ON i.id = b.item_id WHERE b.user = ? ORDER BY b.time DESC LIMIT 500""",
         (user,)).fetchall()
+    quote = lambda r: json.loads(r["quote"]) if r["quote"] else None
     kept = [{"kind": "article", "id": f"bookmark-{r['id']}", "item": r["id"], "url": r["url"], "title": r["title"],
-             "summary": r["summary"] or "", "image": r["image"], "published": r["published"], "author": r["author"] or "",
+             "summary": without_quote(r["summary"] or "", quote(r)), "quote": quote(r), "image": r["image"], "published": r["published"], "author": r["author"] or "",
              "source": r["source"], "lane": "main", "reason": "", "also": [], "bookmarked": True} for r in rows]
     posts = []
     creds = people.mastodon(conn, user)

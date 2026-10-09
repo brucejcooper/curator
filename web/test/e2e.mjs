@@ -40,7 +40,8 @@ const state = {
   statuses: Array.from({ length: 30 }, (_, n) => status(3000 + 2 * n)).filter((s) => s.id !== '3020'),
   articles: [
     article(3007, 'read-one'),
-    article(3013, 'between', { image: 'https://news.example/pic.jpg', summary: 'Summary of between. More at https://example.org/more.', also: [{ url: 'https://other.example/x', source: 'rss:The Verge' }] }),
+    article(3013, 'between', { image: 'https://news.example/pic.jpg', summary: 'Summary of between. More at https://example.org/more.', also: [{ url: 'https://other.example/x', source: 'rss:The Verge' }],
+      quote: { author: '@jn@c.im', name: 'Jordan', text: 'The quoted post.', url: 'https://c.im/@jn/1', image: null } }),
     article(3201, 'newest', { lane: 'maybe', title: 'A post with a lot to say. A post with a lot…', summary: longPost }),
   ],
   verdicts: { 3022: { lane: 'maybe', also: [] }, 3024: { lane: 'main', also: [{ url: 'https://other.example/y', source: 'rss:9to5Mac' }] } },
@@ -296,6 +297,8 @@ assert.match(await page.textContent(`${art} .curated-label`), /Picked for you/);
 assert.equal(await page.$eval(`${art} .curated-image img`, (i) => i.src), 'https://news.example/pic.jpg');
 assert.equal(await page.$eval(`${art} .curated-summary a`, (a) => a.href), 'https://example.org/more');
 assert.match(await page.textContent(`${art} .also`), /Also covered by The Verge/);
+assert.equal(await page.$eval(`${art} a.quote`, (a) => a.href), 'https://c.im/@jn/1', 'a quote post shows what it quotes, linked');
+assert.match(await page.textContent(`${art} .quote`), /Jordan @jn@c\.im\s*The quoted post\./);
 await page.click(`${art} button[aria-label="Less like this"]`);
 await page.waitForSelector(`${art} button[aria-label="Less like this"][aria-pressed="true"]`);
 assert.deepEqual(state.lastVote, { item_id: 'between', vote: -1 });

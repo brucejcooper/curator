@@ -104,27 +104,37 @@ def has_link_card(s: dict) -> bool:
 # quoted post along (`quote.quoted_status`) and puts a "RE: <link>" fallback
 # paragraph in the text for apps that can't show it; Bluesky embeds the
 # quoted record. The quoted text comes after the post's own, so the reader,
-# the story grouping and Jev all see it.
+# the story grouping and Jev all see it; it's also kept apart (`quote`) for
+# the reader app to show in a box, as Mastodon apps do.
 QUOTE_INLINE = re.compile(r'<p class="quote-inline">.*?</p>', re.I | re.S)
 LEADING_MENTIONS = re.compile(r"^(?:@[\w.@-]+\s+)+")
 
 
-def quoting(author: str, text: str) -> str:
-    text = LEADING_MENTIONS.sub("", text).strip()  # a reply's addressees
-    return f"Quoting {author}: {text}" if text else ""
+def quoted(author: str, name: str, text: str, url: str, image: str | None) -> dict | None:
+    text = plain(LEADING_MENTIONS.sub("", text))  # without a reply's addressees
+    if not text and not image:
+        return None
+    return {"author": author, "name": name or author, "text": text, "url": url,
+            "image": image if image and image.startswith("https://") else None}
 
 
-def mastodon_quote(s: dict) -> tuple[str, str | None]:
-    """("Quoting @who: ...", its picture) for a quote post, else ("", None)."""
+def quoting(q: dict | None) -> str:
+    """The quoted post as a paragraph of the quoting post's text."""
+    return f"Quoting {q['author']}: {q['text']}" if q and q["text"] else ""
+
+
+def mastodon_quote(s: dict) -> dict | None:
+    """The post a Mastodon quote post quotes, if it can be shown."""
     q = (s.get("quote") or {}).get("quoted_status")
     if not q:
-        return "", None
+        return None
     text = plain(QUOTE_INLINE.sub("", q.get("content") or ""))
     media = q.get("media_attachments") or []
     if not text:
         text = " ".join(m.get("description") or "" for m in media).strip()
     photo = next((m.get("preview_url") or m.get("url") for m in media if m.get("type") in ("image", "gifv")), None)
-    return quoting("@" + q["account"]["acct"], text), photo
+    acct = q["account"]
+    return quoted("@" + acct["acct"], acct.get("display_name") or "", text, q.get("url") or q.get("uri") or "", photo)
 
 
 def from_status(s: dict, source: str, home: bool = False) -> dict | None:
@@ -137,20 +147,22 @@ def from_status(s: dict, source: str, home: bool = False) -> dict | None:
     if (s.get("language") or "en") != "en":
         return None
     published = datetime.fromisoformat(s["created_at"].replace("Z", "+00:00"))
-    quote, quote_photo = mastodon_quote(s)
+    quote = mastodon_quote(s)
     text = plain(QUOTE_INLINE.sub("", s.get("content") or "") if quote else s.get("content"))
     if home and not text and not quote:  # a photo post: judge it by its descriptions
         text = " ".join(m.get("description") or "" for m in s.get("media_attachments") or []).strip() or "(a photo)"
-    full = "\n\n".join(x for x in (text, quote) if x)
+    full = "\n\n".join(x for x in (text, quoting(quote)) if x)
     author = "@" + s["account"]["acct"]
     card = s.get("card") or {}
-    photo = next((m.get("preview_url") or m.get("url") for m in s.get("media_attachments") or [] if m.get("type") in ("image", "gifv")), quote_photo)
+    photo = next((m.get("preview_url") or m.get("url") for m in s.get("media_attachments") or [] if m.get("type") in ("image", "gifv")), None)
     if has_link_card(s):
-        return item(card["url"], card.get("title") or short_title(text or full), f"{card.get('description', '')}\n\n{author}: {full}",
-                    source, author, published, image=card.get("image") or photo)
-    if len(full) < 80 and not home:
+        it = item(card["url"], card.get("title") or short_title(text or full), f"{card.get('description', '')}\n\n{author}: {full}",
+                  source, author, published, image=card.get("image") or photo)
+    elif len(full) < 80 and not home:
         return None
-    return item(s.get("url") or s["uri"], short_title(text or full), full, source, author, published, image=photo)
+    else:
+        it = item(s.get("url") or s["uri"], short_title(text or full), full, source, author, published, image=photo)
+    return {**it, "quote": quote}
 
 
 def mastodon_client(server: str, token: str) -> httpx.Client:
@@ -228,19 +240,31 @@ def from_bsky(p: dict, source: str) -> dict | None:
     media = embed.get("media") or embed  # recordWithMedia wraps the media
     ext = media.get("external") or {}
     photo = next((i.get("thumb") or i.get("fullsize") for i in media.get("images") or []), None)
-    quoted = embed.get("record") or {}
-    quoted = quoted.get("record", quoted) if "value" not in quoted else quoted  # recordWithMedia wraps the record too
-    quote = quoting("@" + quoted["author"]["handle"], quoted["value"].get("text", "")) \
-        if isinstance(quoted.get("value"), dict) and quoted.get("author") else ""
-    full = "\n\n".join(x for x in (text, quote) if x)
+    quote = bsky_quote(embed)
+    full = "\n\n".join(x for x in (text, quoting(quote)) if x)
     if ext.get("uri"):
-        return item(ext["uri"], ext.get("title") or short_title(text or full), f"{ext.get('description', '')}\n\n{author}: {full}",
-                    source, author, published, image=ext.get("thumb") or photo)
-    if len(full) < 80:
+        it = item(ext["uri"], ext.get("title") or short_title(text or full), f"{ext.get('description', '')}\n\n{author}: {full}",
+                  source, author, published, image=ext.get("thumb") or photo)
+    elif len(full) < 80:
         return None
-    rkey = p["uri"].rsplit("/", 1)[-1]
-    return item(f"https://bsky.app/profile/{p['author']['handle']}/post/{rkey}", short_title(text or full), full, source, author,
-                published, image=photo)
+    else:
+        rkey = p["uri"].rsplit("/", 1)[-1]
+        it = item(f"https://bsky.app/profile/{p['author']['handle']}/post/{rkey}", short_title(text or full), full, source, author,
+                  published, image=photo)
+    return {**it, "quote": quote}
+
+
+def bsky_quote(embed: dict) -> dict | None:
+    """The post a Bluesky quote post embeds, if any."""
+    rec = embed.get("record") or {}
+    rec = rec if "value" in rec else rec.get("record") or {}  # recordWithMedia wraps the record too
+    if not isinstance(rec.get("value"), dict) or not rec.get("author"):
+        return None
+    handle = rec["author"]["handle"]
+    images = [i for e in rec.get("embeds") or [] for i in (e.get("images") or (e.get("media") or {}).get("images") or [])]
+    url = f"https://bsky.app/profile/{handle}/post/{rec['uri'].rsplit('/', 1)[-1]}" if rec.get("uri") else ""
+    return quoted("@" + handle, rec["author"].get("displayName") or "", rec["value"].get("text", ""), url,
+                  next((i.get("thumb") or i.get("fullsize") for i in images), None))
 
 
 def bluesky_posts(http: httpx.Client, uris: list[str]) -> dict[str, dict]:

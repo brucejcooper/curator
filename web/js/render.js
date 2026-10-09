@@ -373,6 +373,18 @@ export function sourceLabel(source) {
   return source;
 }
 
+// The post a quote post quotes, in a box as Mastodon apps show it. Tapping
+// it opens the quoted post.
+function curatedQuote(q) {
+  if (!q) return null;
+  const href = safeUrl(q.url);
+  const image = safeUrl(q.image);
+  return el(href ? 'a' : 'div', { class: 'quote', ...(href ? { href, target: '_blank', rel: 'noopener noreferrer' } : {}) },
+    el('div', { class: 'who' }, el('strong', { text: q.name || q.author }), q.name && q.name !== q.author ? el('small', { text: ` ${q.author}` }) : null),
+    q.text ? el('p', { class: 'quote-text', text: q.text }) : null,
+    image ? el('img', { src: image, alt: '', loading: 'lazy', onerror: (e) => e.currentTarget.remove() }) : null);
+}
+
 function alsoCovered(also) {
   const links = (also || []).filter((a) => safeUrl(a.url));
   if (!links.length) return null;
@@ -429,6 +441,8 @@ export function renderCurated(item, { onVote, onBookmark, onOpen }) {
       if (text.scrollHeight > text.clientHeight + 2) more.hidden = false;
     }));
   }
+  const quoted = curatedQuote(item.quote);
+  if (quoted) body.append(quoted);
   const also = alsoCovered(item.also);
   if (also) body.append(also);
   if (item.reason) body.append(el('details', { class: 'why' }, el('summary', { text: 'Why this?' }), el('p', { text: item.reason })));

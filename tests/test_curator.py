@@ -341,8 +341,15 @@ def test_a_quote_post_carries_what_it_quotes():
     it = from_status(status, "mastodon:home:x", home=True)
     assert it["title"] == "That’s twice today."
     assert it["summary"] == "That’s twice today.\n\nQuoting @jn@c.im: This piece is obviously AI generated, and confirmed as such."
+    assert it["quote"] == {"author": "@jn@c.im", "name": "@jn@c.im", "text": "This piece is obviously AI generated, and confirmed as such.",
+                           "url": "", "image": None}
+    # The app shows the quote in a box, so its paragraph leaves the text.
+    from curator.reader import without_quote
+    assert without_quote(it["summary"], it["quote"]) == "That’s twice today."
+    assert without_quote("Unrelated text.", it["quote"]) == "Unrelated text."
     # A quote that can't be shown (pending, removed) leaves the post as it was.
-    assert "RE: c.im/@jn/2" in from_status({**status, "quote": {"state": "deleted", "quoted_status": None}}, "mastodon:home:x", home=True)["summary"]
+    gone = from_status({**status, "quote": {"state": "deleted", "quoted_status": None}}, "mastodon:home:x", home=True)
+    assert "RE: c.im/@jn/2" in gone["summary"] and gone["quote"] is None
 
     from curator.collect import from_bsky
 
@@ -352,5 +359,6 @@ def test_a_quote_post_carries_what_it_quotes():
                       "record": {"author": {"handle": "ana.bsky.social"}, "value": {"text": "Our new paper on soil carbon is out today, after four years of fieldwork."}}}}
     it = from_bsky(post, "bluesky:#x")
     assert it["title"] == "Exactly this." and it["summary"].endswith("Quoting @ana.bsky.social: Our new paper on soil carbon is out today, after four years of fieldwork.")
+    assert it["quote"]["author"] == "@ana.bsky.social" and it["quote"]["text"].startswith("Our new paper")
     wrapped = {**post, "embed": {"$type": "app.bsky.embed.recordWithMedia#view", "media": {"images": []}, "record": {"record": post["embed"]["record"]}}}
     assert from_bsky(wrapped, "bluesky:#x")["summary"] == it["summary"]
