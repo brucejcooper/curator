@@ -362,3 +362,19 @@ def test_a_quote_post_carries_what_it_quotes():
     assert it["quote"]["author"] == "@ana.bsky.social" and it["quote"]["text"].startswith("Our new paper")
     wrapped = {**post, "embed": {"$type": "app.bsky.embed.recordWithMedia#view", "media": {"images": []}, "record": {"record": post["embed"]["record"]}}}
     assert from_bsky(wrapped, "bluesky:#x")["summary"] == it["summary"]
+
+
+def test_a_reader_gets_a_version_from_their_own_sources(alex, db):
+    # The story's lead is from a source Alex doesn't have (one they removed);
+    # another of its items came through one they do. Alex gets that one.
+    from curator.publish import select
+
+    add_story(db, "st", "rss:Walled Garden", 0.9)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    db.execute("""INSERT INTO items (id, url, canonical, title, summary, source, author, published, fetched, story_id)
+                  VALUES ('mine', 'https://mine/a', 'https://mine/a', 'Mine', 'My version', 'mastodon:#astronomy', '', ?, ?, 'st')""", (now, now))
+    db.execute("INSERT INTO sightings VALUES ('mine', 'mastodon:#astronomy', 'https://mine/a', ?)", (now,))
+    db.execute("INSERT INTO judgments (user, item_id, jev_score, local_score) VALUES ('alex', 'mine', 0.9, 0.1)")
+    db.commit()
+    picked = {s["story"]: s for s in select(db, alex)}
+    assert picked["st"]["id"] == "mine" and picked["st"]["url"] == "https://mine/a" and picked["st"]["source"] == "mastodon:#astronomy"

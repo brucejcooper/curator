@@ -238,12 +238,9 @@ def source_reputation(conn, user: str | None = None) -> dict[str, float]:
     return {source: (up + 1) / (total + 2) for source, (up, total) in tally.items()}
 
 
-def choose_lead(conn, story: str, reputation: dict | None = None) -> None:
-    """Best version: a fuller summary, first to report, a trusted source, fresh."""
-    reputation = reputation if reputation is not None else source_reputation(conn)
-    rows = conn.execute("SELECT id, summary, source, published FROM items WHERE story_id = ?", (story,)).fetchall()
-    if not rows:
-        return
+def best_version(rows: list, reputation: dict):
+    """Of a story's items, the best version: a fuller summary, first to
+    report, a trusted source, fresh."""
     earliest = min(r["published"] for r in rows)
     newest = max(r["published"] for r in rows)
 
@@ -255,6 +252,15 @@ def choose_lead(conn, story: str, reputation: dict | None = None) -> None:
             + 0.15 * (r["published"] == newest)
         )
 
-    lead = max(rows, key=merit)["id"]
+    return max(rows, key=merit)
+
+
+def choose_lead(conn, story: str, reputation: dict | None = None) -> None:
+    """The story's lead, for everyone: its best version."""
+    reputation = reputation if reputation is not None else source_reputation(conn)
+    rows = conn.execute("SELECT id, summary, source, published FROM items WHERE story_id = ?", (story,)).fetchall()
+    if not rows:
+        return
+    lead = best_version(rows, reputation)["id"]
     conn.execute("UPDATE stories SET lead_id = ?, updated = ? WHERE id = ?",
                  (lead, datetime.now(timezone.utc).isoformat(timespec="seconds"), story))

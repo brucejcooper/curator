@@ -39,6 +39,7 @@ def candidates(conn, user: str, keys: set[str], since: str) -> list[dict]:
             GROUP BY s.id HAVING first_fetched >= ?""",
         (user, *keys, since)).fetchall()
     stories = [dict(r) for r in rows]
+    own_leads(conn, stories, keys)
     # The lead's own verdicts, for "Why this?".
     leads = [s["id"] for s in stories]
     verdicts = {}
@@ -50,6 +51,30 @@ def candidates(conn, user: str, keys: set[str], since: str) -> list[dict]:
     for s in stories:
         s["jev"], s["local"] = verdicts.get(s["id"], (None, None))
     return stories
+
+
+def own_leads(conn, stories: list[dict], keys: list[str]) -> None:
+    """A story's lead is chosen for everyone. Where it isn't from one of this
+    reader's sources (one they removed, or someone else's), they get the best
+    version that is."""
+    from curator.stories import best_version, source_reputation
+
+    leads = [s["id"] for s in stories]
+    theirs = set()
+    for i in range(0, len(leads), 500):
+        chunk = leads[i:i + 500]
+        theirs |= {r[0] for r in conn.execute(
+            f"SELECT item_id FROM sightings WHERE item_id IN ({marks(len(chunk))}) AND source IN ({marks(len(keys))})", (*chunk, *keys))}
+    others = [s for s in stories if s["id"] not in theirs]
+    if not others:
+        return
+    reputation = source_reputation(conn)
+    for s in others:
+        rows = conn.execute(
+            f"""SELECT * FROM items WHERE story_id = ? AND rule IS NULL
+                AND id IN (SELECT item_id FROM sightings WHERE source IN ({marks(len(keys))}))""", (s["story"], *keys)).fetchall()
+        if rows:
+            s.update(dict(best_version(rows, reputation)))
 
 
 def margins(conn, user: str, stories: list[dict], floors: dict, source_floors: dict, always: set[str] = frozenset(),
