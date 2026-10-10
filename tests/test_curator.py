@@ -378,3 +378,19 @@ def test_a_reader_gets_a_version_from_their_own_sources(alex, db):
     db.commit()
     picked = {s["story"]: s for s in select(db, alex)}
     assert picked["st"]["id"] == "mine" and picked["st"]["url"] == "https://mine/a" and picked["st"]["source"] == "mastodon:#astronomy"
+
+
+def test_a_comics_hover_text_is_kept_and_posts_say_who_posted():
+    from curator.collect import parse_feed
+
+    atom = b"""<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom"><title>xkcd.com</title>
+      <entry><title>Juice</title><link href="https://xkcd.com/3308/"/><updated>2099-01-01T00:00:00Z</updated>
+      <summary type="html">&lt;img src="https://imgs.xkcd.com/comics/juice.png" title="Definitely not do anything else." alt="x" /&gt;</summary></entry></feed>"""
+    from datetime import timedelta
+    (it,) = parse_feed(atom, "xkcd", max_age=timedelta(days=36500 * 2))
+    assert it["summary"] == "Definitely not do anything else." and it["image"] == "https://imgs.xkcd.com/comics/juice.png"
+
+    status = {"created_at": "2026-10-01T00:00:00Z", "content": "<p>" + "A post with enough words in it to count. " * 3 + "</p>",
+              "language": "en", "visibility": "public", "url": "https://m/1",
+              "account": {"acct": "ana@m.example", "display_name": "Ana", "avatar_static": "https://m/ana.png"}}
+    assert from_status(status, "mastodon:#x")["poster"] == {"name": "Ana", "avatar": "https://m/ana.png"}

@@ -373,6 +373,14 @@ export function sourceLabel(source) {
   return source;
 }
 
+// Pictures are cropped to a wide frame, which suits a photo but ruins a comic
+// strip or a tall screenshot: those are shown whole.
+function wholeIfOddShape(e) {
+  const img = e.currentTarget;
+  const ratio = img.naturalHeight / img.naturalWidth;
+  if (ratio && (ratio < 0.45 || ratio > 0.7)) img.parentElement.classList.add('whole');
+}
+
 // The post a quote post quotes, in a box as Mastodon apps show it. Tapping
 // it opens the quoted post.
 function curatedQuote(q) {
@@ -409,11 +417,21 @@ export function renderCurated(item, { onVote, onBookmark, onOpen }) {
     : maybe
       ? '🤔 Maybe: the curator isn’t sure. Tell it with 👍 or 👎'
       : '📰 Picked for you by the curator'));
+  // A post (or a link someone shared): who posted it first, then where it
+  // came from. An article: the source, then its writer.
+  const poster = item.poster;
+  const avatar = poster && safeUrl(poster.avatar);
+  const icon = el('span', { class: 'avatar source-icon', 'aria-hidden': 'true', text: '📰' });
   article.append(el('header', {},
-    el('span', { class: 'avatar source-icon', 'aria-hidden': 'true', text: '📰' }),
-    el('div', { class: 'who' },
-      el('strong', { text: sourceLabel(item.source) }),
-      el('small', { text: item.author || 'Article' })),
+    avatar ? el('span', { class: 'avatar', 'aria-hidden': 'true' },
+      el('img', { src: avatar, alt: '', loading: 'lazy', onerror: (e) => e.currentTarget.parentElement.replaceWith(icon) })) : icon,
+    poster
+      ? el('div', { class: 'who' },
+        el('strong', { text: poster.name || item.author }),
+        el('small', { text: [poster.name ? item.author : '', sourceLabel(item.source)].filter(Boolean).join(' · ') }))
+      : el('div', { class: 'who' },
+        el('strong', { text: sourceLabel(item.source) }),
+        el('small', { text: item.author || 'Article' })),
     link({ class: 'time', title: new Date(item.published).toLocaleString(), text: relTime(item.published) })));
 
   const image = safeUrl(item.image);
@@ -426,7 +444,7 @@ export function renderCurated(item, { onVote, onBookmark, onOpen }) {
   const body = el('div', { class: 'body' },
     isPost ? null : titleLink,
     image ? link({ class: 'curated-image', tabindex: '-1', 'aria-hidden': 'true' },
-      el('img', { src: image, alt: '', loading: 'lazy', onerror: (e) => e.currentTarget.parentElement.remove() })) : null,
+      el('img', { src: image, alt: '', loading: 'lazy', onload: wholeIfOddShape, onerror: (e) => e.currentTarget.parentElement.remove() })) : null,
     text);
   if (text) {
     // Long text is clipped to a few lines; "Show more" opens it in place.

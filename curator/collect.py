@@ -36,6 +36,13 @@ def item(url, title, summary, source, author, published, always_show=False, imag
 
 
 IMG_SRC = re.compile(r'<img[^>]+src="(https://[^"]+)"', re.I)
+IMG_TITLE = re.compile(r'<img\b[^>]*?\btitle\s*=\s*("[^"]*"|\'[^\']*\')[^>]*>', re.I)
+
+
+def hover_text(html: str) -> str:
+    """A picture's hover text kept as a paragraph: for a comic (xkcd) it's the
+    punchline. Other tags go when the HTML becomes text."""
+    return IMG_TITLE.sub(lambda m: f"<p>{m.group(1)[1:-1]}</p>", html or "")
 
 
 def rss_image(e) -> str | None:
@@ -82,7 +89,7 @@ def parse_feed(content: bytes, name: str, always_show: bool = False, max_age: ti
         if now() - published > max_age:
             continue
         summary = e.get("summary") or (e.get("content") or [{}])[0].get("value", "")
-        items.append(item(link, e.get("title", link), summary, f"rss:{name}", e.get("author"),
+        items.append(item(link, e.get("title", link), hover_text(summary), f"rss:{name}", e.get("author"),
                           published, always_show, rss_image(e)))
     return items
 
@@ -153,6 +160,7 @@ def from_status(s: dict, source: str, home: bool = False) -> dict | None:
         text = " ".join(m.get("description") or "" for m in s.get("media_attachments") or []).strip() or "(a photo)"
     full = "\n\n".join(x for x in (text, quoting(quote)) if x)
     author = "@" + s["account"]["acct"]
+    poster = {"name": s["account"].get("display_name") or "", "avatar": s["account"].get("avatar_static") or s["account"].get("avatar") or ""}
     card = s.get("card") or {}
     photo = next((m.get("preview_url") or m.get("url") for m in s.get("media_attachments") or [] if m.get("type") in ("image", "gifv")), None)
     if has_link_card(s):
@@ -162,7 +170,7 @@ def from_status(s: dict, source: str, home: bool = False) -> dict | None:
         return None
     else:
         it = item(s.get("url") or s["uri"], short_title(text or full), full, source, author, published, image=photo)
-    return {**it, "quote": quote}
+    return {**it, "quote": quote, "poster": poster}
 
 
 def mastodon_client(server: str, token: str) -> httpx.Client:
@@ -251,7 +259,8 @@ def from_bsky(p: dict, source: str) -> dict | None:
         rkey = p["uri"].rsplit("/", 1)[-1]
         it = item(f"https://bsky.app/profile/{p['author']['handle']}/post/{rkey}", short_title(text or full), full, source, author,
                   published, image=photo)
-    return {**it, "quote": quote}
+    poster = {"name": p["author"].get("displayName") or "", "avatar": p["author"].get("avatar") or ""}
+    return {**it, "quote": quote, "poster": poster}
 
 
 def bsky_quote(embed: dict) -> dict | None:

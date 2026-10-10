@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS items (
   traits TEXT,                  -- Jev's answers to the reader-independent questions (traits.py)
   sample INTEGER DEFAULT 0,     -- picked for the maybe lane's random sample
   image TEXT,                   -- picture URL; '' once looked for and none found
-  quote TEXT                    -- JSON: the post a quote post quotes {author, name, text, url, image}
+  quote TEXT,                   -- JSON: the post a quote post quotes {author, name, text, url, image}
+  poster TEXT                   -- JSON: who posted it, for a post or a shared link {name, avatar}
 );
 CREATE INDEX IF NOT EXISTS items_fetched ON items(fetched);
 CREATE INDEX IF NOT EXISTS items_story ON items(story_id);
@@ -118,6 +119,8 @@ def migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE items ADD COLUMN image TEXT")
         if "quote" not in cols:
             conn.execute("ALTER TABLE items ADD COLUMN quote TEXT")
+        if "poster" not in cols:
+            conn.execute("ALTER TABLE items ADD COLUMN poster TEXT")
         if "traits" not in cols:
             conn.execute("ALTER TABLE items ADD COLUMN traits TEXT")
             if "jev" in cols:

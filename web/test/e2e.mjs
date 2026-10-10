@@ -42,7 +42,8 @@ const state = {
     article(3007, 'read-one'),
     article(3013, 'between', { image: 'https://news.example/pic.jpg', summary: 'Summary of between. More at https://example.org/more.', also: [{ url: 'https://other.example/x', source: 'rss:The Verge' }],
       quote: { author: '@jn@c.im', name: 'Jordan', text: 'The quoted post.', url: 'https://c.im/@jn/1', image: null } }),
-    article(3201, 'newest', { lane: 'maybe', title: 'A post with a lot to say. A post with a lot…', summary: longPost }),
+    article(3201, 'newest', { lane: 'maybe', title: 'A post with a lot to say. A post with a lot…', summary: longPost,
+      source: 'mastodon:#homelab', author: '@ana@m.example', poster: { name: 'Ana', avatar: 'https://cdn.example/avatar.png' } }),
   ],
   verdicts: { 3022: { lane: 'maybe', also: [] }, 3024: { lane: 'main', also: [{ url: 'https://other.example/y', source: 'rss:9to5Mac' }] } },
   position: '3010', // the reader's position on the server
@@ -297,6 +298,7 @@ assert.match(await page.textContent(`${art} .curated-label`), /Picked for you/);
 assert.equal(await page.$eval(`${art} .curated-image img`, (i) => i.src), 'https://news.example/pic.jpg');
 assert.equal(await page.$eval(`${art} .curated-summary a`, (a) => a.href), 'https://example.org/more');
 assert.match(await page.textContent(`${art} .also`), /Also covered by The Verge/);
+assert.equal(await page.textContent(`${art} header .who strong`), 'ABC News', 'an article says its source first');
 assert.equal(await page.$eval(`${art} a.quote`, (a) => a.href), 'https://c.im/@jn/1', 'a quote post shows what it quotes, linked');
 assert.match(await page.textContent(`${art} .quote`), /Jordan @jn@c\.im\s*The quoted post\./);
 await page.click(`${art} button[aria-label="Less like this"]`);
@@ -342,6 +344,9 @@ assert.ok(await page.$('article[data-id="3018"] a.card'), 'link card rendered');
 order = await ids();
 assert.equal(order.at(-1), '3201', 'articles newer than every post come last');
 assert.ok(await page.$('article[data-id="3201"].curated.maybe'));
+// A post says who posted it first, then where it came from.
+assert.equal(await page.textContent('article[data-id="3201"] header .who strong'), 'Ana');
+assert.equal(await page.textContent('article[data-id="3201"] header .who small'), '@ana@m.example · #homelab on Mastodon');
 // A long post shows once (no title repeating it), clipped, with Show more.
 assert.equal(await page.$('article[data-id="3201"] .curated-title'), null);
 await page.waitForSelector('article[data-id="3201"] .show-more:not([hidden])');
