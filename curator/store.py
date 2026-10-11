@@ -82,6 +82,25 @@ CREATE TABLE IF NOT EXISTS suggestions (  -- the weekly scout's finds, and what 
 CREATE INDEX IF NOT EXISTS suggestions_user ON suggestions(user, status);
 CREATE TABLE IF NOT EXISTS mastodon_apps (server TEXT PRIMARY KEY, client_id TEXT, client_secret TEXT);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS feed_history (  -- every story that has been in a reader's feed, for search
+  user TEXT, story_id TEXT,
+  item_id TEXT,                 -- the version they were shown
+  lane TEXT, added TEXT,
+  PRIMARY KEY (user, story_id)
+);
+-- Full-text search over items (search.py), kept in step by triggers.
+CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(title, summary, author, content='items',
+  tokenize='porter unicode61 remove_diacritics 2');
+CREATE TRIGGER IF NOT EXISTS items_fts_insert AFTER INSERT ON items BEGIN
+  INSERT INTO items_fts (rowid, title, summary, author) VALUES (new.rowid, new.title, new.summary, new.author);
+END;
+CREATE TRIGGER IF NOT EXISTS items_fts_delete AFTER DELETE ON items BEGIN
+  INSERT INTO items_fts (items_fts, rowid, title, summary, author) VALUES ('delete', old.rowid, old.title, old.summary, old.author);
+END;
+CREATE TRIGGER IF NOT EXISTS items_fts_update AFTER UPDATE OF title, summary, author ON items BEGIN
+  INSERT INTO items_fts (items_fts, rowid, title, summary, author) VALUES ('delete', old.rowid, old.title, old.summary, old.author);
+  INSERT INTO items_fts (rowid, title, summary, author) VALUES (new.rowid, new.title, new.summary, new.author);
+END;
 """
 
 
@@ -99,6 +118,10 @@ def connect() -> sqlite3.Connection:
         conn.execute("PRAGMA journal_mode=WAL")  # persists in the file
         migrate(conn)
         conn.executescript(SCHEMA)
+        # The index points at items by rowid, which a VACUUM or a restored
+        # backup can renumber: rebuild it once per process (a second or so).
+        conn.execute("INSERT INTO items_fts (items_fts) VALUES ('rebuild')")
+        conn.commit()
         _ready.add(str(DB))
     return conn
 
@@ -187,6 +210,10 @@ def labels(conn, user: str | None = None) -> dict[str, tuple[int, float]]:
         if vote < 0 or out.get(item, (0, 0))[1] < SIGNAL_WEIGHTS["vote"]:
             out[item] = (1 if vote > 0 else -1, SIGNAL_WEIGHTS["vote"])
     return out
+
+
+def json_or_none(text: str | None):
+    return json.loads(text) if text else None
 
 
 def vec(blob: bytes | None) -> np.ndarray | None:

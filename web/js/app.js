@@ -400,6 +400,8 @@ class Reader {
     window.addEventListener('popstate', () => this.closeTopOverlay());
     for (const back of document.querySelectorAll('.overlay .back')) back.onclick = () => history.back();
     $('#open-bookmarks').onclick = () => this.openBookmarks();
+    $('#open-search').onclick = () => this.openSearch();
+    this.bindSearch();
     $('#open-profile').onclick = () => {
       $('#settings').close();
       this.openProfile();
@@ -458,6 +460,10 @@ class Reader {
       if (e.key === 'Escape' && this.overlays.length) history.back();
       if (!this.overlaysClosed()) return;
       if (e.key === 'j') this.upTo();
+      if (e.key === '/') {
+        e.preventDefault();
+        this.openSearch();
+      }
       if (e.key === 'k') this.pane.scrollBy({ top: -window.innerHeight * 0.8, behavior: 'smooth' });
       if (e.key === 'r' && this.caughtUp) this.checkForNew();
     });
@@ -809,6 +815,57 @@ class Reader {
       $('#profile-body').replaceChildren(el('p', { class: 'hint pad', text: "Couldn't load your profile." }));
       showError(err);
     }
+  }
+
+  // Search: what the curator picked for you (or everything from your
+  // sources), best matches first with a lean towards recent ones. Searches
+  // as you type; a slower, older answer never replaces a newer one.
+  openSearch() {
+    this.openOverlay($('#search'));
+    const input = $('#search-input');
+    input.focus();
+    input.select();
+    if (!input.value.trim()) this.showSearchHint();
+  }
+
+  showSearchHint() {
+    $('#search-body').replaceChildren(el('p', { class: 'hint pad', text: 'Search the articles the curator picked for you, by words or by what they’re about. Recent ones come first.' }));
+  }
+
+  bindSearch() {
+    const input = $('#search-input');
+    const everything = $('#search-everything');
+    let timer = null;
+    let asked = 0;
+    const run = async () => {
+      clearTimeout(timer);
+      const q = input.value.trim();
+      const n = ++asked;
+      if (!q) return this.showSearchHint();
+      const body = $('#search-body');
+      if (!body.querySelector('article')) body.replaceChildren(el('p', { class: 'hint pad' }, ...busyText('Searching…')));
+      try {
+        const { items } = await this.api.search(q, everything.checked);
+        if (n !== asked) return;
+        diag.log('search', { got: items.length, everything: everything.checked });
+        body.replaceChildren(...(items.length ? items.map((a) => this.render(a)) : [el('p', { class: 'hint pad', text: everything.checked ? 'Nothing matches.' : 'Nothing you were shown matches. Try including what the curator passed on.' })]));
+        body.scrollTop = 0;
+      } catch (err) {
+        if (n !== asked) return;
+        body.replaceChildren(el('p', { class: 'hint pad', text: "Couldn't search just now." }));
+        showError(err);
+      }
+    };
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(run, 350);
+    });
+    $('#search-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      input.blur(); // put the keyboard away to show the results
+      run();
+    });
+    everything.addEventListener('change', run);
   }
 
   // Bookmarks: articles and posts you've bookmarked here, newest first, and

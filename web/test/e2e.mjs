@@ -51,6 +51,7 @@ const state = {
   votes: {}, // key → vote
   bookmarks: new Set(),
   bookmarkCalls: [],
+  searches: [],
   events: [],
   tokens: new Set(), // valid access tokens
   refresh: null, // the current (rotating) refresh token
@@ -206,6 +207,14 @@ async function fakes(ctx) {
       const arts = state.articles.filter((a) => state.bookmarks.has(a.item)).map((a) => ({ ...a, id: `bookmark-${a.item}`, bookmarked: true }));
       return json(route, { articles: arts, posts: [{ kind: 'status', id: '2999', status: status(2999), verdict: {} }] });
     }
+    if (url.pathname === '/api/search') {
+      const q = (url.searchParams.get('q') || '').toLowerCase();
+      const everything = url.searchParams.get('everything') === '1';
+      state.searches.push({ q, everything });
+      const hits = state.articles.filter((a) => a.title.toLowerCase().includes(q)).map((a) => ({ ...a, id: `search-${a.item}`, picked: true }));
+      if (everything && q) hits.push(article('search-passed', 'passed', { title: `Passed-on ${q}`, picked: false }));
+      return json(route, { items: hits });
+    }
     if (url.pathname === '/api/suggestions') {
       const all = state.suggestions || [];
       return json(route, { open: all.filter((x) => ['new', 'review'].includes(x.status)), trying: all.filter((x) => x.status === 'trial'),
@@ -322,6 +331,24 @@ await page.waitForSelector('#bookmarks-body article.curated');
 assert.match(await page.textContent('#bookmarks-body'), /Bookmarked here.*Article between.*Mastodon bookmarks.*Post number 2999/s);
 await page.goBack();
 await page.waitForSelector('#bookmarks', { state: 'hidden' });
+
+// Search: as you type, what you were shown; optionally what was passed on.
+await page.click('#open-search');
+await page.waitForSelector('#search:not([hidden])');
+assert.match(await page.textContent('#search-body'), /Recent ones come first/);
+await page.fill('#search-input', 'between');
+await page.waitForSelector('#search-body article.curated');
+assert.deepEqual(await page.$$eval('#search-body article', (a) => a.map((n) => n.dataset.item)), ['between']);
+assert.equal(await page.$('#search-body .curated-label'), null, 'something you were shown has no label');
+await page.check('#search-everything');
+await page.waitForSelector('#search-body article[data-item="passed"]');
+assert.match(await page.textContent('#search-body article[data-item="passed"] .curated-label'), /Not in your feed/);
+assert.deepEqual(state.searches.at(-1), { q: 'between', everything: true });
+await page.fill('#search-input', 'zzz');
+await page.uncheck('#search-everything');
+await page.waitForSelector('#search-body >> text=Nothing you were shown matches');
+await page.goBack();
+await page.waitForSelector('#search', { state: 'hidden' });
 
 // Threads come from the curator.
 await page.click(`${post} .content`, { position: { x: 4, y: 4 } }); // the text, not the hashtag link in it

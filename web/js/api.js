@@ -216,6 +216,12 @@ export class Api {
     return this.request('/api/bookmarks');
   }
 
+  // Articles matching `q`, best and most recent first; `everything` includes
+  // what the curator passed on.
+  search(q, everything = false) {
+    return this.request(`/api/search?${new URLSearchParams({ q, ...(everything ? { everything: '1' } : {}) })}`);
+  }
+
   onboard(answers) {
     return this.request('/api/onboarding', { method: 'POST', body: answers });
   }

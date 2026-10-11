@@ -153,6 +153,15 @@ def bookmarks(conn, who: Who, request, body):
     return reader.bookmarks(conn, who.id)
 
 
+def search(conn, who: Who, request, body):
+    """?q=words&everything=1: matching articles, best (and most recent) first.
+    Without `everything`, only what the curator picked for you."""
+    from curator.search import search as find
+
+    q = request.query_params
+    return {"items": find(conn, who.id, who.profile.sources["keys"], q.get("q", ""), everything=q.get("everything") == "1")}
+
+
 def event(conn, who: Who, request, body):
     """{item_id | status_id, kind}. "open" (following the link) counts for more than a 👍."""
     item = str(body.get("item_id") or "") or (reader.resolve(conn, who.profile, body) or "")
@@ -445,6 +454,7 @@ app = Starlette(
         Route("/api/vote", api(vote), methods=["POST"]),
         Route("/api/bookmark", api(bookmark), methods=["POST"]),
         Route("/api/bookmarks", api(bookmarks)),
+        Route("/api/search", api(search)),
         Route("/api/event", api(event), methods=["POST"]),
         Route("/api/profile", api(profile), methods=["GET", "PUT"]),
         Route("/api/profile/{version:int}", api(profile_version)),

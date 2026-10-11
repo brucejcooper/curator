@@ -311,6 +311,7 @@ dialog > button.danger { color: var(--danger); }
   padding: 0 max(0px, calc((100% - 40rem) / 2)) calc(env(safe-area-inset-bottom) + 40vh);
 }
 .pad { padding: 1rem; }
+.search-scope { flex: none; display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; font-size: 0.85rem; color: var(--muted); border-bottom: 1px solid var(--line); }
 .section-title { margin: 0; padding: 1rem 1rem 0.4rem; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
 
 .account-row, .tag-row {

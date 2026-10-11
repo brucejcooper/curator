@@ -417,6 +417,8 @@ export function renderCurated(item, { onVote, onBookmark, onOpen }) {
     article.append(el('div', { class: 'curated-label' }, item.trial
       ? `🧪 Trying out ${item.trial}: 👍 or 👎 helps you decide whether to keep it`
       : '🤔 Maybe: the curator isn’t sure. Tell it with 👍 or 👎'));
+  } else if (item.picked === false) {
+    article.append(el('div', { class: 'curated-label', text: '🙈 Not in your feed: the curator passed on this' }));
   }
   // A post (or a link someone shared): who posted it first, then where it
   // came from. An article: the source, then its writer.

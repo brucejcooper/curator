@@ -245,10 +245,13 @@ def feed_folder(user: str):
 def publish(conn, profile: Profile) -> int:
     """Writes the reader's feed; returns how many items it has."""
     from curator.images import fill_images
+    from curator.search import record
 
     reader = people.user(conn, profile.user) or {}
     stories = select(conn, profile)
     fill_images(conn, stories)
+    record(conn, profile.user, stories)
+    conn.commit()
     feed_url = f"{PUBLIC_URL}/f/{reader.get('feed_path', '')}/feed.json"
     feed = json_feed(conn, stories, f"Curated for {reader.get('name') or profile.user}", feed_url)
     folder = feed_folder(profile.user)

@@ -70,6 +70,7 @@
         <small id="who"></small>
       </div>
       <button id="suggest-bar" type="button" hidden>💡<span class="badge"></span></button>
+      <button id="open-search" type="button" aria-label="Search" title="Search (/)">🔍</button>
       <button id="open-bookmarks" type="button" aria-label="Bookmarks" title="Bookmarks">🔖</button>
       <button id="refresh" type="button" aria-label="Where I'm up to" title="Where I'm up to (j)">⌄</button>
     </header>
@@ -114,6 +115,18 @@
       <strong>How the curator sees you</strong>
     </header>
     <div id="profile-body" class="overlay-body"></div>
+  </section>
+
+  <section id="search" class="overlay" hidden aria-label="Search">
+    <header class="overlay-bar">
+      <button type="button" class="back" aria-label="Back">‹</button>
+      <form id="search-form" role="search">
+        <input id="search-input" type="search" placeholder="Search your articles" aria-label="Search your articles"
+               autocomplete="off" autocorrect="off" enterkeyhint="search">
+      </form>
+    </header>
+    <label class="search-scope"><input type="checkbox" id="search-everything"> Include what the curator passed on</label>
+    <div id="search-body" class="overlay-body"></div>
   </section>
 
   <section id="bookmarks" class="overlay" hidden aria-label="Bookmarks">

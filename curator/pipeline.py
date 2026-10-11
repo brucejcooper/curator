@@ -15,7 +15,7 @@ from curator.stories import ingest
 from curator.traits import judge_traits
 
 log = logging.getLogger(__name__)
-KEEP_ITEMS = timedelta(days=30)
+KEEP_ITEMS = timedelta(days=365)  # a year of articles to search
 KEEP_AGENT_EVENTS = timedelta(days=90)
 KEEP_BACKUPS = 14
 SCOUT_WEEKDAY = int(os.environ.get("CURATOR_SCOUT_WEEKDAY", "6"))  # Sunday: suggestions ready on Monday morning
@@ -141,6 +141,7 @@ def purge(conn) -> None:
     for table, column in (("sightings", "item_id"), ("judgments", "item_id")):
         conn.execute(f"DELETE FROM {table} WHERE {column} NOT IN (SELECT id FROM items)")
     conn.execute("DELETE FROM stories WHERE id NOT IN (SELECT story_id FROM items)")
+    conn.execute("DELETE FROM feed_history WHERE story_id NOT IN (SELECT id FROM stories)")
     conn.commit()
 
 
@@ -180,6 +181,15 @@ def startup() -> None:
     conn = store.connect()
     try:
         people.bootstrap(conn)
+        if not store.get(conn, "feed_history_backfilled"):
+            from curator.search import backfill
+
+            for (user,) in conn.execute("SELECT id FROM users").fetchall():
+                p = people.profile(conn, user)
+                if p:
+                    log.info("feed history for %s: %d stories", user, backfill(conn, p))
+            store.put(conn, "feed_history_backfilled", True)
+            conn.commit()
     finally:
         conn.close()
     log.info("database %s ready", DB)
