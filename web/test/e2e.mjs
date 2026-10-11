@@ -572,6 +572,39 @@ await ctx.close();
   await c.close();
 }
 
+// iOS scrolls to the top when the status bar is tapped (easy to hit holding
+// the phone by its top edge). A big move up that no finger made offers a way
+// back to the same entry, even after older entries load above it.
+{
+  state.statuses = Array.from({ length: 120 }, (_, n) => status(1000 + n));
+  state.articles = [];
+  state.position = '1040';
+  const session = signedIn();
+  const c = await newContext();
+  await c.addInitScript(([s]) => localStorage.setItem('reader.session', JSON.stringify(s)), [session]);
+  const p = await c.newPage();
+  await p.goto(APP);
+  await p.waitForSelector('#timeline article:not(.read)');
+  for (let i = 0; i < 10; i++) {
+    await p.mouse.wheel(0, 400);
+    await p.waitForTimeout(60);
+  }
+  await p.waitForTimeout(700); // no recent input, as with a status-bar tap
+  const topEntry = () => p.evaluate(() => {
+    const bar = document.querySelector('#bar').getBoundingClientRect().bottom;
+    return [...document.querySelectorAll('#timeline article')].find((n) => n.getBoundingClientRect().bottom > bar + 1)?.dataset.id;
+  });
+  const before = await topEntry();
+  assert.equal(await p.isVisible('#back-bar'), false, 'no button while reading');
+  await p.evaluate(() => window.scrollTo(0, 0));
+  await p.waitForSelector('#back-bar:not([hidden])');
+  await p.waitForTimeout(1500); // older entries load above and the page settles
+  await p.click('#back-button');
+  assert.equal(await topEntry(), before, 'back at the same entry');
+  assert.equal(await p.isVisible('#back-bar'), false, 'button gone once used');
+  await c.close();
+}
+
 // iOS home-screen app: by default links open normally (the in-app viewer).
 // With "Open links in Safari" on, they go through x-safari-https://, falling
 // back to a normal open if nothing takes over (as here: Chromium doesn't

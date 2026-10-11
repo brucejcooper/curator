@@ -21,6 +21,7 @@ const STATUS_FADE_MS = 300; // matches the #end-status transition
 const SAFARI_FALLBACK_MS = 1500;
 const HISTORY_SIZE = 20; // already-read entries shown above the reading position on load
 const POSITION_SAVE_MS = 4000; // batch position saves to the server
+const WAY_BACK_MS = 30_000; // how long "Back to where you were" stays up
 
 // iOS only: `navigator.standalone` exists in Safari on iPhone/iPad and is
 // true when running from the home screen.
@@ -91,6 +92,9 @@ function showError(err) {
   console.error(err);
   showToast(err.message || String(err));
 }
+
+// Where an element starts, measured from the top of the page.
+const pageTop = (node) => node.getBoundingClientRect().top + window.scrollY;
 
 const spinner = () => el('span', { class: 'spinner', 'aria-hidden': 'true' });
 const busyText = (text) => [spinner(), text];
@@ -426,7 +430,13 @@ class Reader {
         // Big moves with no recent touch are worth knowing about.
         const dy = window.scrollY - lastY;
         lastY = window.scrollY;
-        if (Math.abs(dy) > 1200 && performance.now() - this.lastInput > 500) diag.log('jump', { dy: Math.round(dy), scrollY: Math.round(window.scrollY) });
+        if (Math.abs(dy) > 1200 && performance.now() - this.lastInput > 500) {
+          diag.log('jump', { dy: Math.round(dy), scrollY: Math.round(window.scrollY) });
+          // A big move up that no finger made: iOS's tap-the-status-bar
+          // scroll to the top, easy to hit holding the phone by its top edge.
+          if (dy < 0) this.offerWayBack(lastY - dy); // where it was before this move
+        }
+        this.checkWayBack();
         this.trackRead({ byScrolling: performance.now() - this.lastInput < 1000 });
       });
     }, { passive: true });
@@ -443,6 +453,7 @@ class Reader {
     });
     window.addEventListener('pagehide', () => this.savePosition({ keepalive: true }));
 
+    $('#back-button').onclick = () => this.goWayBack();
     $('#check-new').onclick = () => this.checkForNew();
     $('#retry').onclick = () => this.loadMore({ force: true });
     $('#refresh').onclick = () => (this.caughtUp ? this.checkForNew() : this.nextPost());
@@ -536,6 +547,43 @@ class Reader {
     // Keep going while the end is close (but never retry in a loop).
     if (ok && !this.caughtUp && this.end.getBoundingClientRect().top < window.innerHeight + 2000) await this.loadMore();
     return ok;
+  }
+
+  // Remembers where the reader was (the entry at the top of the screen, so
+  // older entries loaded above don't throw it off) and shows a button back.
+  offerWayBack(fromY) {
+    if (this.wayBack) return;
+    const top = fromY + this.headerHeight();
+    const node = [...this.articles()].find((n) => pageTop(n) + n.offsetHeight > top);
+    if (!node) return;
+    this.wayBack = { node, offset: top - pageTop(node) };
+    diag.log('way-back-offered', { id: node.dataset.id });
+    $('#back-bar').hidden = false;
+    clearTimeout(this.wayBackTimer);
+    this.wayBackTimer = setTimeout(() => this.dropWayBack(), WAY_BACK_MS);
+  }
+
+  wayBackY() {
+    const { node, offset } = this.wayBack;
+    return pageTop(node) + offset - this.headerHeight();
+  }
+
+  goWayBack() {
+    if (!this.wayBack) return;
+    diag.log('way-back', { id: this.wayBack.node.dataset.id });
+    window.scrollTo(0, this.wayBackY());
+    this.dropWayBack();
+  }
+
+  // Back near the spot by scrolling: the button has done its job.
+  checkWayBack() {
+    if (this.wayBack && window.scrollY >= this.wayBackY() - window.innerHeight) this.dropWayBack();
+  }
+
+  dropWayBack() {
+    this.wayBack = null;
+    clearTimeout(this.wayBackTimer);
+    $('#back-bar').hidden = true;
   }
 
   // Pull up past the end of the timeline to check for new posts: the
