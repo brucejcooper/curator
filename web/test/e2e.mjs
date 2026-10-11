@@ -292,9 +292,9 @@ await page.click(`${post} button[aria-label="More like this"]`);
 await page.waitForSelector(`${post} button[aria-label="More like this"][aria-pressed="true"]`);
 assert.deepEqual(state.lastVote, { status_id: '3012', vote: 1 }, 'votes on posts name the post');
 
-// Articles: label, picture, linked URLs, votes, bookmark, tap-through.
+// Articles: picture, linked URLs, votes, bookmark, tap-through.
 const art = 'article[data-id="3013"]';
-assert.match(await page.textContent(`${art} .curated-label`), /Picked for you/);
+assert.equal(await page.$(`${art} .curated-label`), null, 'a plain pick has no label: everything is picked');
 assert.equal(await page.$eval(`${art} .curated-image img`, (i) => i.src), 'https://news.example/pic.jpg');
 assert.equal(await page.$eval(`${art} .curated-summary a`, (a) => a.href), 'https://example.org/more');
 assert.match(await page.textContent(`${art} .also`), /Also covered by The Verge/);

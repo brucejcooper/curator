@@ -411,12 +411,13 @@ export function renderCurated(item, { onVote, onBookmark, onOpen }) {
   const article = el('article', { class: `status curated${maybe ? ' maybe' : ''}`, 'data-id': item.id, 'data-item': item.item });
   const link = (attrs, ...children) => el('a', { href, target: '_blank', rel: 'noopener noreferrer', onclick: () => onOpen?.(item), ...attrs }, ...children);
 
-  // Say in words what this card is: the edge colour alone didn't explain it.
-  article.append(el('div', { class: 'curated-label' }, item.trial
-    ? `🧪 Trying out ${item.trial}: 👍 or 👎 helps you decide whether to keep it`
-    : maybe
-      ? '🤔 Maybe: the curator isn’t sure. Tell it with 👍 or 👎'
-      : '📰 Picked for you by the curator'));
+  // Say in words when a card is unusual: the edge colour alone didn't explain
+  // it. Everything here is picked by the curator, so a plain pick says nothing.
+  if (item.trial || maybe) {
+    article.append(el('div', { class: 'curated-label' }, item.trial
+      ? `🧪 Trying out ${item.trial}: 👍 or 👎 helps you decide whether to keep it`
+      : '🤔 Maybe: the curator isn’t sure. Tell it with 👍 or 👎'));
+  }
   // A post (or a link someone shared): who posted it first, then where it
   // came from. An article: the source, then its writer.
   const poster = item.poster;
