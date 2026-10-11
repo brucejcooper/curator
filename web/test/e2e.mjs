@@ -333,6 +333,7 @@ await page.waitForSelector('#thread', { state: 'hidden' });
 
 // ---------------------------------------------------------------- reading
 for (let i = 0; i < 60; i++) {
+  await page.mouse.move(200, 400);
   await page.mouse.wheel(0, 700);
   await page.waitForTimeout(40);
 }
@@ -354,6 +355,7 @@ const clipped = await page.$eval('article[data-id="3201"] .curated-summary', (p)
 await page.click('article[data-id="3201"] .show-more');
 assert.ok(await page.$eval('article[data-id="3201"] .curated-summary', (p) => p.clientHeight) > clipped, 'Show more opens it in place');
 for (let i = 0; i < 8; i++) {
+  await page.mouse.move(200, 400);
   await page.mouse.wheel(0, 700);
   await page.waitForTimeout(40);
 }
@@ -550,7 +552,7 @@ await ctx.close();
       sessionStorage.setItem('seeded', '1');
       localStorage.setItem('reader.session', JSON.stringify(s));
     }
-    window.scrollBy = () => {};
+    Element.prototype.scrollBy = () => {};
   }, [session]);
   const p = await c.newPage();
   await p.goto(APP);
@@ -558,6 +560,7 @@ await ctx.close();
   const readPos = () => p.evaluate(() => Number(JSON.parse(localStorage.getItem('reader.pos.alex')) || 1000));
   let prev = await readPos();
   for (let i = 0; i < 60; i++) {
+    await p.mouse.move(200, 400);
     await p.mouse.wheel(0, 300);
     await p.waitForTimeout(80);
     const now = await readPos();
@@ -572,9 +575,10 @@ await ctx.close();
   await c.close();
 }
 
-// iOS scrolls to the top when the status bar is tapped (easy to hit holding
-// the phone by its top edge). A big move up that no finger made offers a way
-// back to the same entry, even after older entries load above it.
+// iOS scrolls the page to the top when the status bar is tapped (easy to
+// hit holding the phone by its top edge). The feed scrolls in its own pane,
+// so the page has nowhere to go. The arrow in the bar goes back to the first
+// unread entry.
 {
   state.statuses = Array.from({ length: 120 }, (_, n) => status(1000 + n));
   state.articles = [];
@@ -585,23 +589,36 @@ await ctx.close();
   const p = await c.newPage();
   await p.goto(APP);
   await p.waitForSelector('#timeline article:not(.read)');
-  for (let i = 0; i < 10; i++) {
+  await p.waitForTimeout(300);
+  const topEntry = () => p.evaluate(() => {
+    const bar = document.querySelector('#bar').getBoundingClientRect().bottom;
+    return [...document.querySelectorAll('#timeline article')].find((n) => n.getBoundingClientRect().bottom > bar + 4)?.dataset.id;
+  });
+  const before = await topEntry();
+  assert.equal(before, '1041', 'opens at the first unread entry');
+  assert.ok(await p.evaluate(() => document.querySelector('#pane').scrollTop > 0), 'the feed scrolls in its pane');
+  await p.evaluate(() => window.scrollTo(0, 0)); // what the status-bar tap does
+  await p.waitForTimeout(200);
+  assert.equal(await topEntry(), before, 'scrolling the page leaves the feed where it was');
+
+  // Read a few, wander back up, then the arrow returns to the first unread.
+  for (let i = 0; i < 6; i++) {
+    await p.mouse.move(200, 400);
     await p.mouse.wheel(0, 400);
     await p.waitForTimeout(60);
   }
-  await p.waitForTimeout(700); // no recent input, as with a status-bar tap
-  const topEntry = () => p.evaluate(() => {
-    const bar = document.querySelector('#bar').getBoundingClientRect().bottom;
-    return [...document.querySelectorAll('#timeline article')].find((n) => n.getBoundingClientRect().bottom > bar + 1)?.dataset.id;
-  });
-  const before = await topEntry();
-  assert.equal(await p.isVisible('#back-bar'), false, 'no button while reading');
-  await p.evaluate(() => window.scrollTo(0, 0));
-  await p.waitForSelector('#back-bar:not([hidden])');
+  await p.waitForTimeout(300);
+  const firstUnread = await p.evaluate(() => document.querySelector('#timeline article:not(.read)').dataset.id);
+  await p.evaluate(() => (document.querySelector('#pane').scrollTop = 0));
   await p.waitForTimeout(1500); // older entries load above and the page settles
-  await p.click('#back-button');
-  assert.equal(await topEntry(), before, 'back at the same entry');
-  assert.equal(await p.isVisible('#back-bar'), false, 'button gone once used');
+  await p.click('#refresh');
+  await p.waitForFunction(() => { // until the smooth scroll stops
+    const st = document.querySelector('#pane').scrollTop;
+    const still = st === window.lastSt;
+    window.lastSt = st;
+    return still;
+  }, null, { polling: 250 });
+  assert.equal(await topEntry(), firstUnread, 'the arrow goes to where I am up to');
   await c.close();
 }
 

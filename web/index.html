@@ -71,9 +71,10 @@
       </div>
       <button id="suggest-bar" type="button" hidden>💡<span class="badge"></span></button>
       <button id="open-bookmarks" type="button" aria-label="Bookmarks" title="Bookmarks">🔖</button>
-      <button id="refresh" type="button" aria-label="Next post" title="Next post (j)">⌄</button>
+      <button id="refresh" type="button" aria-label="Where I'm up to" title="Where I'm up to (j)">⌄</button>
     </header>
 
+    <div id="pane">
     <div id="older"><p id="older-status"></p></div>
     <main id="timeline"></main>
 
@@ -86,6 +87,7 @@
         <button id="check-new" type="button" class="linklike">Check now</button>
         <p id="pull-hint" class="pull-hint">Pull up to check for new posts</p>
       </div>
+    </div>
     </div>
   </section>
 
@@ -173,10 +175,6 @@
 
   <div id="update-bar" role="status" hidden>
     New version available <button type="button" id="update-reload" class="primary">Reload</button>
-  </div>
-
-  <div id="back-bar" hidden>
-    <button type="button" id="back-button" class="primary">↓ Back to where you were</button>
   </div>
 
   <div id="toast" role="alert" hidden></div>

@@ -21,7 +21,6 @@ const STATUS_FADE_MS = 300; // matches the #end-status transition
 const SAFARI_FALLBACK_MS = 1500;
 const HISTORY_SIZE = 20; // already-read entries shown above the reading position on load
 const POSITION_SAVE_MS = 4000; // batch position saves to the server
-const WAY_BACK_MS = 30_000; // how long "Back to where you were" stays up
 
 // iOS only: `navigator.standalone` exists in Safari on iPhone/iPad and is
 // true when running from the home screen.
@@ -93,8 +92,9 @@ function showError(err) {
   showToast(err.message || String(err));
 }
 
-// Where an element starts, measured from the top of the page.
-const pageTop = (node) => node.getBoundingClientRect().top + window.scrollY;
+// The reader's feed scrolls in its own pane rather than the page (see
+// #pane in styles.css), so iOS's status-bar tap can't throw you to the top.
+const pane = () => $('#pane');
 
 const spinner = () => el('span', { class: 'spinner', 'aria-hidden': 'true' });
 const busyText = (text) => [spinner(), text];
@@ -201,6 +201,7 @@ class Reader {
     this.readCursor = 0; // index into the list of the first entry not yet marked read
     this.positionDirty = false;
 
+    this.pane = pane();
     this.list = $('#timeline');
     this.end = $('#end');
   }
@@ -225,12 +226,12 @@ class Reader {
     // Only start infinite loading once we know where the reader is up to.
     new IntersectionObserver((entries) => {
       if (entries.some((e) => e.isIntersecting)) this.loadOlder();
-    }, { rootMargin: '1500px 0px 0px 0px' }).observe($('#older'));
+    }, { root: this.pane, rootMargin: '1500px 0px 0px 0px' }).observe($('#older'));
     new IntersectionObserver((entries) => {
       if (!entries.some((e) => e.isIntersecting)) return;
       if (!this.caughtUp) this.loadMore();
       else if (Date.now() - this.lastChecked > MIN_RECHECK_MS) this.checkForNew({ background: true });
-    }, { rootMargin: '0px 0px 2000px 0px' }).observe(this.end);
+    }, { root: this.pane, rootMargin: '0px 0px 2000px 0px' }).observe(this.end);
   }
 
   // Your position is kept on the server, so every device picks up where any
@@ -277,12 +278,12 @@ class Reader {
   jumpToFirstUnread() {
     const first = this.articles()[this.readCursor];
     if (first) {
-      const y = first.getBoundingClientRect().top + window.scrollY - this.headerHeight();
-      window.scrollTo(0, y);
-      diag.log('jump-to-unread', { id: first.dataset.id, y: Math.round(y), scrollY: Math.round(window.scrollY) });
+      const y = first.getBoundingClientRect().top + this.pane.scrollTop - this.headerHeight();
+      this.pane.scrollTo(0, y);
+      diag.log('jump-to-unread', { id: first.dataset.id, y: Math.round(y), scrollY: Math.round(this.pane.scrollTop) });
     } else if (this.readCursor) {
-      const endTop = this.end.getBoundingClientRect().top + window.scrollY;
-      window.scrollTo(0, Math.max(0, endTop - window.innerHeight * 0.6));
+      const endTop = this.end.getBoundingClientRect().top + this.pane.scrollTop;
+      this.pane.scrollTo(0, Math.max(0, endTop - window.innerHeight * 0.6));
     }
   }
 
@@ -320,7 +321,7 @@ class Reader {
       this.list.prepend(frag);
       this.readCursor += added;
       const shift = anchor.getBoundingClientRect().top - before;
-      window.scrollBy(0, shift);
+      this.pane.scrollBy(0, shift);
       const drift = Math.round(anchor.getBoundingClientRect().top - before);
       diag.log('older', { got: page.items.length, added, shift: Math.round(shift), drift, waitedMs: Math.round(performance.now() - waitStart) });
       status.textContent = '';
@@ -331,7 +332,7 @@ class Reader {
     } finally {
       this.loadingOlder = false;
     }
-    if (ok && window.scrollY < 1500) this.loadOlder();
+    if (ok && this.pane.scrollTop < 1500) this.loadOlder();
   }
 
   // A timeline entry: a Mastodon post (filtered and annotated by the curator)
@@ -416,34 +417,28 @@ class Reader {
     for (const type of ['touchmove', 'wheel', 'pointerdown', 'keydown']) {
       window.addEventListener(type, () => (this.lastInput = performance.now()), { passive: true });
     }
-    let lastY = window.scrollY;
+    let lastY = this.pane.scrollTop;
     window.addEventListener('touchstart', () => (this.touching = true), { passive: true });
     window.addEventListener('touchend', () => (this.touching = false), { passive: true });
     window.addEventListener('touchcancel', () => (this.touching = false), { passive: true });
     let ticking = false;
-    window.addEventListener('scroll', () => {
+    this.pane.addEventListener('scroll', () => {
       this.lastScrollAt = performance.now();
       if (ticking || !this.overlaysClosed()) return;
       ticking = true;
       requestAnimationFrame(() => {
         ticking = false;
         // Big moves with no recent touch are worth knowing about.
-        const dy = window.scrollY - lastY;
-        lastY = window.scrollY;
-        if (Math.abs(dy) > 1200 && performance.now() - this.lastInput > 500) {
-          diag.log('jump', { dy: Math.round(dy), scrollY: Math.round(window.scrollY) });
-          // A big move up that no finger made: iOS's tap-the-status-bar
-          // scroll to the top, easy to hit holding the phone by its top edge.
-          if (dy < 0) this.offerWayBack(lastY - dy); // where it was before this move
-        }
-        this.checkWayBack();
+        const dy = this.pane.scrollTop - lastY;
+        lastY = this.pane.scrollTop;
+        if (Math.abs(dy) > 1200 && performance.now() - this.lastInput > 500) diag.log('jump', { dy: Math.round(dy), scrollY: Math.round(lastY) });
         this.trackRead({ byScrolling: performance.now() - this.lastInput < 1000 });
       });
     }, { passive: true });
     this.bindPull();
 
     document.addEventListener('visibilitychange', () => {
-      diag.log(document.visibilityState === 'hidden' ? 'hidden' : 'visible', { scrollY: Math.round(window.scrollY) });
+      diag.log(document.visibilityState === 'hidden' ? 'hidden' : 'visible', { scrollY: Math.round(this.pane.scrollTop) });
       if (document.visibilityState === 'hidden') {
         diag.save();
         this.savePosition({ keepalive: true });
@@ -453,18 +448,17 @@ class Reader {
     });
     window.addEventListener('pagehide', () => this.savePosition({ keepalive: true }));
 
-    $('#back-button').onclick = () => this.goWayBack();
     $('#check-new').onclick = () => this.checkForNew();
     $('#retry').onclick = () => this.loadMore({ force: true });
-    $('#refresh').onclick = () => (this.caughtUp ? this.checkForNew() : this.nextPost());
+    $('#refresh').onclick = () => this.upTo();
     $('#menu').onclick = () => this.openSettings();
 
     document.addEventListener('keydown', (e) => {
       if (e.target.closest('input, textarea, select, dialog[open]')) return;
       if (e.key === 'Escape' && this.overlays.length) history.back();
       if (!this.overlaysClosed()) return;
-      if (e.key === 'j') this.nextPost();
-      if (e.key === 'k') window.scrollBy({ top: -window.innerHeight * 0.8, behavior: 'smooth' });
+      if (e.key === 'j') this.upTo();
+      if (e.key === 'k') this.pane.scrollBy({ top: -window.innerHeight * 0.8, behavior: 'smooth' });
       if (e.key === 'r' && this.caughtUp) this.checkForNew();
     });
   }
@@ -489,12 +483,13 @@ class Reader {
     return this.list.children;
   }
 
-  // Scroll so the first unread entry sits just below the header.
-  nextPost() {
+  // Where I'm up to: the first unread entry just below the header, or the
+  // "caught up" card when there's nothing unread.
+  upTo() {
     const next = this.articles()[this.readCursor];
-    const target = next && next.getBoundingClientRect().top <= this.headerHeight() + 4 ? this.articles()[this.readCursor + 1] : next;
-    if (target) window.scrollBy({ top: target.getBoundingClientRect().top - this.headerHeight(), behavior: 'smooth' });
-    else this.end.scrollIntoView({ behavior: 'smooth' });
+    diag.log('up-to', { id: next?.dataset.id ?? 'end' });
+    if (next) this.pane.scrollBy({ top: next.getBoundingClientRect().top - this.headerHeight(), behavior: 'smooth' });
+    else this.end.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }
 
   // Loads the entries after the newest one asked about. Only `end` means
@@ -549,43 +544,6 @@ class Reader {
     return ok;
   }
 
-  // Remembers where the reader was (the entry at the top of the screen, so
-  // older entries loaded above don't throw it off) and shows a button back.
-  offerWayBack(fromY) {
-    if (this.wayBack) return;
-    const top = fromY + this.headerHeight();
-    const node = [...this.articles()].find((n) => pageTop(n) + n.offsetHeight > top);
-    if (!node) return;
-    this.wayBack = { node, offset: top - pageTop(node) };
-    diag.log('way-back-offered', { id: node.dataset.id });
-    $('#back-bar').hidden = false;
-    clearTimeout(this.wayBackTimer);
-    this.wayBackTimer = setTimeout(() => this.dropWayBack(), WAY_BACK_MS);
-  }
-
-  wayBackY() {
-    const { node, offset } = this.wayBack;
-    return pageTop(node) + offset - this.headerHeight();
-  }
-
-  goWayBack() {
-    if (!this.wayBack) return;
-    diag.log('way-back', { id: this.wayBack.node.dataset.id });
-    window.scrollTo(0, this.wayBackY());
-    this.dropWayBack();
-  }
-
-  // Back near the spot by scrolling: the button has done its job.
-  checkWayBack() {
-    if (this.wayBack && window.scrollY >= this.wayBackY() - window.innerHeight) this.dropWayBack();
-  }
-
-  dropWayBack() {
-    this.wayBack = null;
-    clearTimeout(this.wayBackTimer);
-    $('#back-bar').hidden = true;
-  }
-
   // Pull up past the end of the timeline to check for new posts: the
   // bottom-of-the-page version of pull-to-refresh, since new posts arrive
   // at the bottom.
@@ -594,7 +552,7 @@ class Reader {
     const hint = $('#pull-hint');
     let startY = null;
     let armed = false;
-    const atBottom = () => window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+    const atBottom = () => this.pane.clientHeight + this.pane.scrollTop >= this.pane.scrollHeight - 2;
     const reset = () => {
       startY = null;
       armed = false;
@@ -699,7 +657,7 @@ class Reader {
       advanced = true;
     }
     if (this.readCursor > from) {
-      diag.log('read', { why: 'scrolled-past', n: this.readCursor - from, to: items[this.readCursor - 1].dataset.id, lowest, scrollY: Math.round(window.scrollY), byScrolling, inputAgoMs: Math.round(performance.now() - (this.lastInput || 0)) });
+      diag.log('read', { why: 'scrolled-past', n: this.readCursor - from, to: items[this.readCursor - 1].dataset.id, lowest, scrollY: Math.round(this.pane.scrollTop), byScrolling, inputAgoMs: Math.round(performance.now() - (this.lastInput || 0)) });
     }
     const done = this.end.querySelector('.done');
     if (byScrolling && this.caughtUp && this.readCursor < items.length && done.getBoundingClientRect().bottom <= window.innerHeight) {
@@ -709,7 +667,7 @@ class Reader {
         node.classList.add('read');
         this.setPosition(node.dataset.id);
       }
-      diag.log('read', { why: 'end-card', n: this.readCursor - endFrom, to: items[this.readCursor - 1].dataset.id, scrollY: Math.round(window.scrollY) });
+      diag.log('read', { why: 'end-card', n: this.readCursor - endFrom, to: items[this.readCursor - 1].dataset.id, scrollY: Math.round(this.pane.scrollTop) });
       advanced = true;
     }
     if (advanced) this.updateCount();
@@ -885,7 +843,7 @@ class Reader {
       position: this.position,
       onPage: `${this.articles().length} entries, first unread index ${this.readCursor}, ${this.articles().length - this.readCursor} unread`,
       caughtUp: this.caughtUp,
-      scrollY: `${Math.round(window.scrollY)} of ${document.documentElement.scrollHeight}`,
+      scrollY: `${Math.round(pane().scrollTop)} of ${pane().scrollHeight}`,
     };
     return [
       'Reader diagnostics',

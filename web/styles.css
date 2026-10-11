@@ -77,7 +77,15 @@ button { font: inherit; color: inherit; }
 
 /* Fixed rather than sticky: iOS Safari can let a sticky header scroll away.
    The page is padded by the bar's height (--bar-h, measured in app.js). */
-#reader { padding-top: var(--bar-h, calc(env(safe-area-inset-top) + 3.4rem)); }
+/* The feed scrolls in its own pane, not the page: iOS's tap-the-status-bar
+   scroll to the top only ever scrolls the page, and here the top is the
+   oldest entries, already read. */
+#reader { height: 100dvh; } /* everything in it is fixed; this keeps it a visible box */
+#pane {
+  position: fixed; inset: 0; overflow-y: auto; overscroll-behavior: contain; overflow-anchor: none;
+  padding: var(--bar-h, calc(env(safe-area-inset-top) + 3.4rem)) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+
 #bar {
   position: fixed;
   top: 0;
@@ -338,11 +346,6 @@ dialog > button.danger { color: var(--danger); }
   background: var(--text); color: var(--bg); padding: 0.5em 0.6em 0.5em 1em; border-radius: 12px; font-size: 0.9rem;
 }
 #update-bar .primary { padding: 0.35em 0.9em; }
-
-/* ---------- back to where you were (after iOS's scroll to the top) */
-
-#back-bar { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 1rem); transform: translateX(-50%); z-index: 25; }
-#back-bar button { padding: 0.6em 1.1em; border-radius: 999px; border: 0; font-size: 0.95rem; white-space: nowrap; box-shadow: 0 2px 10px rgb(0 0 0 / 0.25); cursor: pointer; }
 
 /* ---------- loading spinner */
 
