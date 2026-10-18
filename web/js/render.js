@@ -370,6 +370,7 @@ export function sourceLabel(source) {
   if (kind === 'mastodon' && rest.startsWith('home:')) return 'your Mastodon timeline';
   if (kind === 'mastodon') return /^[#@]/.test(rest) ? `${rest} on Mastodon` : 'Mastodon';
   if (kind === 'bluesky') return `${rest} on Bluesky`;
+  if (kind === 'instagram') return `${rest} on Instagram`;
   return source;
 }
 

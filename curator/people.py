@@ -177,7 +177,7 @@ def parse_sources(text: str, user_id: str) -> dict:
     sources = yaml.safe_load(text) or {}
     fixed, learned = sources.get("fixed") or {}, sources.get("learned") or []
     feed = sources.get("feed") or {}
-    masto, bsky = fixed.get("mastodon") or {}, fixed.get("bluesky") or {}
+    masto, bsky, insta = fixed.get("mastodon") or {}, fixed.get("bluesky") or {}, fixed.get("instagram") or {}
     out = {
         "rss": list(fixed.get("rss") or []),
         "mastodon_home": masto.get("home_timeline", True),
@@ -185,6 +185,8 @@ def parse_sources(text: str, user_id: str) -> dict:
         "mastodon_accounts": {a.lstrip("@") for a in masto.get("accounts") or []},
         "bluesky_tags": set(bsky.get("hashtags") or []),
         "bluesky_people": {h.lstrip("@") for h in bsky.get("people") or []},
+        # Everything they post is shown: a few people, chosen by hand.
+        "instagram_people": {h.lstrip("@") for h in insta.get("people") or []},
         "rules": sources.get("rules") or {},
         "target_per_day": feed.get("target_per_day", 100),
         "min_score": {"jev": 0.7, "local": 0.6, **(feed.get("min_score") or {})},
@@ -193,7 +195,8 @@ def parse_sources(text: str, user_id: str) -> dict:
             **{f"rss:{f['name']}": f["min_score"] for f in fixed.get("rss") or [] if "min_score" in f},
             home_source(user_id): feed.get("home_min_score", 0.5),
         },
-        "always": {f"rss:{f['name']}" for f in fixed.get("rss") or [] if f.get("always_show")},
+        "always": ({f"rss:{f['name']}" for f in fixed.get("rss") or [] if f.get("always_show")}
+                   | {f"instagram:@{h.lstrip('@')}" for h in insta.get("people") or []}),
         "trial": {},  # source key → name, for sources on trial
     }
     for entry in learned:
@@ -215,7 +218,8 @@ def parse_sources(text: str, user_id: str) -> dict:
     # Every source key this reader reads from: an item is theirs if it was seen in one.
     out["keys"] = ({f"rss:{f['name']}" for f in out["rss"]} | {f"mastodon:#{t}" for t in out["mastodon_tags"]}
                    | {f"bluesky:#{t}" for t in out["bluesky_tags"]} | {f"mastodon:@{a}" for a in out["mastodon_accounts"]}
-                   | {f"bluesky:@{h}" for h in out["bluesky_people"]} | {home_source(user_id)})
+                   | {f"bluesky:@{h}" for h in out["bluesky_people"]} | {f"instagram:@{h}" for h in out["instagram_people"]}
+                   | {home_source(user_id)})
     return out
 
 

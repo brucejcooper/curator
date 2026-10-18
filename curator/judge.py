@@ -64,10 +64,12 @@ def marks(ids) -> str:
 # ── Rules ────────────────────────────────────────────────────────────────────
 
 def apply_shared_rules(conn, ids: list[str]) -> None:
-    """Rules for everyone: hashtag soup, and items confidently not in English."""
+    """Rules for everyone: hashtag soup, and items confidently not in English.
+    Not for items from always-show sources: someone chose to see all of those."""
     if not ids:
         return
-    for row in conn.execute(f"SELECT id, title, summary FROM items WHERE id IN ({marks(ids)}) AND rule IS NULL", ids).fetchall():
+    for row in conn.execute(f"SELECT id, title, summary FROM items WHERE id IN ({marks(ids)}) AND rule IS NULL AND NOT always_show",
+                            ids).fetchall():
         text = f"{row['title']}. {row['summary'][:300]}"
         lang, confidence = language(text)
         rule = None

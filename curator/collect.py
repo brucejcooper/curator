@@ -1,6 +1,7 @@
 """Collect candidate items for every reader at once: the RSS/Atom feeds,
-Mastodon and Bluesky hashtags in anyone's sources (each fetched once), and
-each connected reader's own Mastodon home timeline."""
+Mastodon and Bluesky hashtags and people, and Instagram people in anyone's
+sources (each fetched once), and each connected reader's own Mastodon home
+timeline."""
 
 import logging
 import re
@@ -10,7 +11,7 @@ import feedparser
 import httpx
 import yaml
 
-from curator import people, store
+from curator import instagram, people, store
 from curator.canon import item_id, plain, short_title
 from curator.config import OWNER, USER_AGENT
 
@@ -314,7 +315,7 @@ def shared_sources(profiles: list) -> dict:
     """Everyone's sources, each once. A feed two readers both follow (maybe
     under different names) is fetched once and seen under each name."""
     feeds: dict[str, dict] = {}
-    tags, bsky, accounts, people_ = set(), set(), set(), set()
+    tags, bsky, accounts, people_, insta = set(), set(), set(), set(), set()
     for p in profiles:
         src = p.sources
         for f in src["rss"]:
@@ -324,8 +325,9 @@ def shared_sources(profiles: list) -> dict:
         bsky |= src["bluesky_tags"]
         accounts |= src["mastodon_accounts"]
         people_ |= src["bluesky_people"]
+        insta |= src["instagram_people"]
     return {"rss": list(feeds.values()), "mastodon_tags": tags, "bluesky_tags": bsky,
-            "mastodon_accounts": accounts, "bluesky_people": people_}
+            "mastodon_accounts": accounts, "bluesky_people": people_, "instagram_people": insta}
 
 
 def bluesky_person(conn, http: httpx.Client, handle: str) -> list[dict]:
@@ -360,6 +362,7 @@ def collect_all(conn, profiles: list) -> list[dict]:
                 found += job()
             except (httpx.HTTPError, ValueError) as e:
                 log.warning("%s: %s", name, e)
+    found += instagram.collect(conn, sources["instagram_people"])
     # Hashtags and people, read with the owner's account.
     owner = people.mastodon(conn, OWNER)
     if owner and (sources["mastodon_tags"] or sources["mastodon_accounts"]):

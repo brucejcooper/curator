@@ -17,6 +17,7 @@ server = [
   "fast-langdetect>=1.0.1",
   "fastembed>=0.4",
   "feedparser>=6",
+  "instaloader>=4.15",
   "numpy>=1.26",
   "pyjwt[crypto]>=2.8",
   "scikit-learn>=1.5",

@@ -391,6 +391,7 @@ server = [
     { name = "fast-langdetect" },
     { name = "fastembed" },
     { name = "feedparser" },
+    { name = "instaloader" },
     { name = "numpy" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "scikit-learn" },
@@ -411,6 +412,7 @@ requires-dist = [
     { name = "fastembed", marker = "extra == 'server'", specifier = ">=0.4" },
     { name = "feedparser", marker = "extra == 'server'", specifier = ">=6" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "instaloader", marker = "extra == 'server'", specifier = ">=4.15" },
     { name = "keyring", specifier = ">=25" },
     { name = "numpy", marker = "extra == 'server'", specifier = ">=1.26" },
     { name = "pydantic", specifier = ">=2.7" },
@@ -697,6 +699,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503, upload-time = "2025-10-18T21:55:43.219Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
+]
+
+[[package]]
+name = "instaloader"
+version = "4.15.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/eb/e1/e4a53e61dc719ea5ff89df171567a91e797a0e5bf5fba067cc892421a2fc/instaloader-4.15.4.tar.gz", hash = "sha256:3fde2f5e9421449344d7e05a41d1ea853ef17efead5a272e4af2728b0eaf38b9", size = 70981, upload-time = "2026-10-12T20:07:16.478Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/35/a7/be5e0bcc51fe17305e40f601f3e73e673ba6bcffe4ef0d661191cedc8311/instaloader-4.15.4-py3-none-any.whl", hash = "sha256:3a859736f34f9d0bd284c50333d0f33b16bc63dd948b1efecdfdc9ebd6257713", size = 72062, upload-time = "2026-10-12T20:07:15.233Z" },
 ]
 
 [[package]]

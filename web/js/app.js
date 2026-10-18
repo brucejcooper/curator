@@ -212,6 +212,7 @@ class Reader {
     $('#reader').hidden = false;
     this.startBusy('Loading…');
     $('#who').textContent = this.me.name;
+    if (this.me.problems?.length) showToast(this.me.problems.join(' · '));
     this.bindUi();
     this.resolvePosition();
     await this.loadHistory();

@@ -6,7 +6,7 @@ import subprocess
 import time
 from datetime import date, datetime, timedelta, timezone
 
-from curator import people, store
+from curator import instagram, people, store
 from curator.collect import collect_all
 from curator.config import BACKUPS, DATA, DB
 from curator.judge import apply_shared_rules, judge_for, judge_local
@@ -143,6 +143,7 @@ def purge(conn) -> None:
     conn.execute("DELETE FROM stories WHERE id NOT IN (SELECT story_id FROM items)")
     conn.execute("DELETE FROM feed_history WHERE story_id NOT IN (SELECT id FROM stories)")
     conn.commit()
+    instagram.tidy(conn)
 
 
 def daily() -> None:

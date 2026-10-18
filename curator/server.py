@@ -22,7 +22,7 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Redire
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from curator import mastodon_connect, people, reader, store
+from curator import instagram, mastodon_connect, people, reader, store
 from curator.auth import User, user_from_token
 from curator.config import PUBLIC_URL
 from curator.people import Profile
@@ -92,7 +92,14 @@ def me(conn, who: Who, request, body):
             "agent": bool(r["agent_token"]),
             "decider": people.decider(conn, who.id),
             "suggestions": conn.execute("SELECT COUNT(*) FROM suggestions WHERE user = ? AND status IN ('new', 'review')",
-                                        (who.id,)).fetchone()[0]}
+                                        (who.id,)).fetchone()[0],
+            "problems": problems(conn, who)}
+
+
+def problems(conn, who: Who) -> list[str]:
+    """Sources the curator can't read right now, for the app to say so."""
+    insta = who.profile and who.profile.sources["instagram_people"] and store.get(conn, instagram.PROBLEM)
+    return [insta] if insta else []
 
 
 def timeline(conn, who: Who, request, body):
@@ -474,6 +481,7 @@ app = Starlette(
         Route("/healthz", healthz),
         Route("/version.json", version),
         Route("/config.json", client_config),
+        Mount("/media", StaticFiles(directory=instagram.MEDIA, check_dir=False)),
         Mount("/", StaticFiles(directory=WEB, html=True, check_dir=False)),
     ],
 )
