@@ -25,7 +25,10 @@ PICTURES = MEDIA / "instagram"
 SESSION = DATA / "instagram-session"
 FETCH_EVERY = timedelta(hours=3)
 RETRY_LOGIN = timedelta(hours=6)  # repeated failed logins get an account locked
-BACK_OFF = timedelta(hours=1)  # after Instagram refuses ("Please wait a few minutes")
+# After Instagram refuses ("Please wait a few minutes"): an hour, doubling with
+# each refusal in a row up to a day, since every retry stretches the block.
+BACK_OFF = timedelta(hours=1)
+MAX_BACK_OFF = timedelta(days=1)
 FIRST_LOOK = timedelta(days=14)  # how far back a newly added person is read
 PER_FETCH = 12
 PROBLEM = "instagram_problem"
@@ -147,10 +150,14 @@ def collect(conn, handles: set[str]) -> list[dict]:
         problem(conn, f"Instagram logged us out: {e}")
         return []
     except instaloader.exceptions.InstaloaderException as e:
-        store.put(conn, "instagram_paused_until", iso(now() + BACK_OFF))
-        problem(conn, f"Couldn't read @{handle} (trying again in an hour): {e}")
+        refusals = store.get(conn, "instagram_refusals", 0) + 1
+        wait = min(BACK_OFF * 2 ** (refusals - 1), MAX_BACK_OFF)
+        store.put(conn, "instagram_refusals", refusals)
+        store.put(conn, "instagram_paused_until", iso(now() + wait))
+        problem(conn, f"Couldn't read @{handle} (trying again in {wait.total_seconds() / 3600:g} h): {e}")
         return []
     store.put(conn, f"instagram_fetched:@{handle}", iso(now()))
+    store.put(conn, "instagram_refusals", 0)
     problem(conn, None)
     conn.commit()
     log.info("instagram @%s: %d new", handle, len(found))

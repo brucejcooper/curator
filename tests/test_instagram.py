@@ -76,7 +76,10 @@ def test_a_refusal_pauses_instagram_for_an_hour(db, insta):
     insta.fail = instaloader.exceptions.ConnectionException("401 Unauthorized - Please wait a few minutes")
     assert instagram.collect(db, {"jeweller"}) == [] and instagram.collect(db, {"jeweller"}) == []
     assert insta.looked == ["jeweller"]
-    assert "trying again in an hour" in store.get(db, instagram.PROBLEM)
+    assert "trying again in 1 h" in store.get(db, instagram.PROBLEM)
+    store.put(db, "instagram_paused_until", "")
+    instagram.collect(db, {"jeweller"})
+    assert "trying again in 2 h" in store.get(db, instagram.PROBLEM)  # doubling while it keeps refusing
 
 
 def test_a_failed_login_waits_hours_before_trying_again(db, tmp_path, monkeypatch):
