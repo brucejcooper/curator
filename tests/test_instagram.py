@@ -72,6 +72,13 @@ def test_being_logged_out_is_said_in_the_app_and_clears_once_it_reads_again(db, 
     assert store.get(db, instagram.PROBLEM) is None
 
 
+def test_a_refusal_pauses_instagram_for_an_hour(db, insta):
+    insta.fail = instaloader.exceptions.ConnectionException("401 Unauthorized - Please wait a few minutes")
+    assert instagram.collect(db, {"jeweller"}) == [] and instagram.collect(db, {"jeweller"}) == []
+    assert insta.looked == ["jeweller"]
+    assert "trying again in an hour" in store.get(db, instagram.PROBLEM)
+
+
 def test_a_failed_login_waits_hours_before_trying_again(db, tmp_path, monkeypatch):
     monkeypatch.setenv("INSTAGRAM_USER", "throwaway")
     monkeypatch.setenv("INSTAGRAM_PASSWORD", "wrong")

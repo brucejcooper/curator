@@ -25,6 +25,7 @@ PICTURES = MEDIA / "instagram"
 SESSION = DATA / "instagram-session"
 FETCH_EVERY = timedelta(hours=3)
 RETRY_LOGIN = timedelta(hours=6)  # repeated failed logins get an account locked
+BACK_OFF = timedelta(hours=1)  # after Instagram refuses ("Please wait a few minutes")
 FIRST_LOOK = timedelta(days=14)  # how far back a newly added person is read
 PER_FETCH = 12
 PROBLEM = "instagram_problem"
@@ -130,7 +131,7 @@ def collect(conn, handles: set[str]) -> list[dict]:
     import instaloader
 
     handle = due(conn, handles) if handles else None
-    if not handle:
+    if not handle or store.get(conn, "instagram_paused_until", "") > iso(now()):
         return []
     L = loader(conn)
     if not L:
@@ -146,7 +147,8 @@ def collect(conn, handles: set[str]) -> list[dict]:
         problem(conn, f"Instagram logged us out: {e}")
         return []
     except instaloader.exceptions.InstaloaderException as e:
-        problem(conn, f"Couldn't read @{handle}: {e}")
+        store.put(conn, "instagram_paused_until", iso(now() + BACK_OFF))
+        problem(conn, f"Couldn't read @{handle} (trying again in an hour): {e}")
         return []
     store.put(conn, f"instagram_fetched:@{handle}", iso(now()))
     problem(conn, None)
