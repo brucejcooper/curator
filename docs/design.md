@@ -30,7 +30,9 @@ picks what each reader would want, learning from what they actually read.
    labelled sponsored by its source).
    Then the item's **traits**, asked once for everyone: how significant it
    is as news, whether it's a news report, rage bait, an advert, hype,
-   personal chatter or a template how-to. Then, for each reader who follows
+   personal chatter or a template how-to, and whether it's paid-for
+   content (sponsored, an advertorial; a confident yes drops it for
+   everyone, a likely one only demotes it). Then, for each reader who follows
    one of its sources: their own rules, their own questions (relevance,
    topic) with their profile as context, and their local model.
 4. **Publish** each reader's feed: the deciding classifier's stories that
@@ -47,7 +49,8 @@ database is backed up.
 - **Jev** (hosted, TypeSafe AI) answers typed questions with calibrated
   probabilities. An item's score is the better of its relevance to the
   reader and its importance as news, plus a small bonus for news reports,
-  discounted for rage bait, adverts, hype, chatter and template how-tos.
+  discounted for rage bait, adverts, sponsored content, hype, chatter and
+  template how-tos.
 - **The local model** uses embedding similarity to the reader's profile and
   to items they liked or didn't, source trust and story features; a plain
   heuristic until the reader has enough signals, then logistic regression.
@@ -90,7 +93,7 @@ and how many of those are stories they don't already get. The bar is
 deliberately high: something is suggested only when it's genuinely good.
 At least four items from the last three months judged, at least half of
 them would have made the feed, and comfortably, on their own merits (an
-item that's a how-to, an advert, hype, rage bait or chatter never counts),
+item that's a how-to, an advert, sponsored, hype, rage bait or chatter never counts),
 and most of those are stories the reader doesn't already get. How often a
 source posts doesn't count against it: rare posting is often a sign of care. At most three a week; most weeks there may be
 none. Everything tried is remembered so it isn't tried again for twelve

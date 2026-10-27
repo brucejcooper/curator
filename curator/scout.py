@@ -54,7 +54,7 @@ MIN_JUDGED = 4  # recent items judged, so the numbers mean something
 MIN_HIT_RATE = 0.5  # at least half would have made the feed
 MIN_MARGIN = 0.05  # and the typical hit clears the bar (hits cluster just above it, so this is modest)
 MIN_NOVELTY = 0.5  # and most of those are stories the reader doesn't already get
-FLAWS = ("rage_bait", "advert", "hype", "chatter", "generic_howto")  # an item with any of these isn't a hit
+FLAWS = ("rage_bait", "advert", "sponsored", "hype", "chatter", "generic_howto")  # an item with any of these isn't a hit
 SAMPLE = 20  # recent items judged per candidate
 PAYWALL_CHECKS = 3  # a site's recent articles looked at for a paywall; any one paywalled rules it out
 SAMPLE_AGE = timedelta(days=90)  # long enough that someone who posts weekly has enough to judge

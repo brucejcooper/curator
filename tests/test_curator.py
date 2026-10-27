@@ -473,3 +473,32 @@ def test_items_collected_before_are_dropped_on_upgrade(db):
     store.migrate(db)  # twice changes nothing
     rules = dict(db.execute("SELECT id, rule FROM items").fetchall())
     assert rules == {"paid": 'sponsored (author "Sponsored Post")', "news": None, "langs": "language de (0.99)"}
+
+
+def test_jev_score_penalises_sponsored_and_scores_older_traits_without_it():
+    q = {"relevant": {"criteria": ["a", "b", "c", "d", "e"]}}
+    paid = {"relevant": {"score": 4.0}, "sponsored": {"noul": 0.75}}
+    assert abs(jev_score(paid, q) - (1 - 0.7 * 0.5)) < 1e-9  # likely paid-for: demoted, not dropped
+    # Traits stored before `sponsored` was asked still score.
+    assert jev_score({"relevant": {"score": 4.0}}, q, {"advert": {"noul": 0.1}, "news": {"noul": 0.5}}) == 1.0
+
+
+def test_surely_sponsored_items_are_dropped_for_everyone(db, monkeypatch):
+    from curator import traits
+
+    now = "2026-10-28T00:00:00+00:00"
+    for iid, title in [("paid", "Copilot Money review"), ("maybe", "Budgeting apps compared"), ("deal", "Today's deals")]:
+        db.execute("INSERT INTO items (id, url, canonical, title, summary, source, author, published, fetched) "
+                   "VALUES (?, ?, ?, ?, '', 'rss:X', 'Sponsored Post', ?, ?)", (iid, f"https://x.example/{iid}", f"https://x.example/{iid}", title, now, now))
+    db.commit()
+    answers = {"paid": {"sponsored": {"noul": 0.95}}, "maybe": {"sponsored": {"noul": 0.7}},
+               "deal": {"advert": {"noul": 0.99}, "sponsored": {"noul": 0.1}}}
+
+    async def fake_ask(rows, questions, state_for):
+        assert "sponsored" in questions and "advert" in questions and state_for(rows[0])["item"]["author"] == "Sponsored Post"
+        return [(r["id"], {"answers": answers[r["id"]], "usage": {"input_tokens": 1}}) for r in rows]
+
+    monkeypatch.setattr(traits, "ask", fake_ask)
+    traits.judge_traits(db, ["paid", "maybe", "deal"])
+    rules = dict(db.execute("SELECT id, rule FROM items").fetchall())
+    assert rules == {"paid": "sponsored (Jev 0.95)", "maybe": None, "deal": None}  # a confident advert still isn't dropped

@@ -27,7 +27,7 @@ IMPORTANCE_WEIGHT = 0.9  # "major news" alone scores 0.9; significant news 0.68 
 # How hard each yes/no pushes an item down: a certain "yes" cuts the score by
 # this share. Chatter and how-tos are softer: Jev flags some wanted items
 # (a maker's own build log, a how-to for something the reader does use).
-PENALTIES = {"rage_bait": 0.7, "advert": 0.7, "hype": 0.7, "chatter": 0.6, "generic_howto": 0.4}
+PENALTIES = {"rage_bait": 0.7, "advert": 0.7, "sponsored": 0.7, "hype": 0.7, "chatter": 0.6, "generic_howto": 0.4}
 # Language: fastText drops confidently non-English items for free; Jev's
 # `english` trait settles the uncertain rest (tested 2026-10-01: fastText
 # alone misfires below ~0.75 on short posts, Jev got those right).
@@ -116,7 +116,7 @@ def visible(conn, keys: set[str], ids: list[str]) -> list[str]:
 def jev_score(answers: dict, questions: dict, traits: dict | None = None) -> float:
     """0..1: the better of relevance to the reader and importance as news,
     plus a bonus for news reports, discounted when the item looks like rage
-    bait, an advert, hype, chatter or a template how-to. `answers` are the
+    bait, an advert, sponsored, hype, chatter or a template how-to. `answers` are the
     reader's questions; `traits` the item-level ones (traits.py)."""
     from curator.traits import QUESTIONS as TRAIT_QUESTIONS
 

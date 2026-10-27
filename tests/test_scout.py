@@ -93,6 +93,16 @@ def test_how_tos_and_adverts_never_count_as_hits(alex, db, monkeypatch):
     assert stats["hit_rate"] == 0.25 and not scout.worth_suggesting(stats)
 
 
+def test_sponsored_items_never_count_as_hits(alex, db, monkeypatch):
+    async def ask(rows, questions, state_for):
+        return [(r["id"], {"answers": {"relevant": {"score": 4}, "sponsored": {"noul": 0.6 if int(r["id"]) < 6 else 0.1}},
+                           "usage": {"input_tokens": 1}}) for r in rows]
+    monkeypatch.setattr(scout, "ask", ask)
+    monkeypatch.setattr("curator.stories.embed", lambda texts: np.eye(len(texts), 384, dtype=np.float32))
+    stats = scout.evaluate(db, alex, {"items": sample(8)}, np.zeros((0, 384), np.float32))
+    assert stats["hit_rate"] == 0.25 and not scout.worth_suggesting(stats)
+
+
 def test_only_real_articles_make_candidates(alex, db):
     assert scout.is_post("https://mastodon.social/@sam/113000000000000000")
     assert scout.is_post("https://bsky.app/profile/sam.bsky.social/post/3kabc")

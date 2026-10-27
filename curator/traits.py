@@ -1,6 +1,6 @@
 """What's true of an item whoever reads it: how significant it is as news,
-whether it's a news report, rage bait, an advert, hype, personal chatter or a
-template how-to, and whether it's in English. Jev answers these once per item
+whether it's a news report, rage bait, an advert, paid-for (sponsored) content,
+hype, personal chatter or a template how-to, and whether it's in English. Jev answers these once per item
 (no reader's profile involved) and every reader's score uses them; each reader
 then only needs their own relevance questions asked (judge.py)."""
 
@@ -42,6 +42,17 @@ QUESTIONS = {
     },
     "rage_bait": {"type": "noul", "instructions": "Is the headline of `item` written mainly to provoke outrage rather than inform?"},
     "advert": {"type": "noul", "instructions": "Is `item` mainly an advertisement, sponsored post, product listing, deal or shopping roundup?"},
+    # Narrower than `advert` (which takes in deals and shopping roundups, which
+    # are sometimes wanted): only paid-for pieces, and a confident yes drops them.
+    "sponsored": {
+        "type": "noul",
+        "instructions": ("Is `item` paid or partner content: a sponsored post, advertorial or promotional piece paid "
+                         "for by the company or product it features, including when it reads like a news article? "
+                         "An author or byline such as 'Sponsored Post' or 'Partner content' means yes."),
+        "criteria": {"true": "Written for, or paid for by, the company or product it promotes",
+                     "false": ("Editorial coverage, even if positive, including reviews, deals posts and shopping "
+                               "roundups by the outlet's own writers")},
+    },
     "hype": {"type": "noul", "instructions": 'Is `item` mainly hype (crypto, "AI will replace X", funding-round news) with little substance?'},
     "chatter": {
         "type": "noul",
@@ -64,6 +75,7 @@ QUESTIONS = {
     },
 }
 JEV_NOT_ENGLISH = 0.3
+JEV_SPONSORED = 0.9  # below this a `sponsored` yes only demotes (judge.PENALTIES)
 
 
 def split_legacy_questions(text: str) -> str:
@@ -105,7 +117,8 @@ def count_tokens(conn, results) -> None:
 
 def judge_traits(conn, ids: list[str]) -> None:
     """Asks the item-level questions for items that don't have answers yet.
-    Items Jev says aren't in English are dropped for everyone."""
+    Items Jev says aren't in English, or are surely paid-for content, are
+    dropped for everyone."""
     if not ids:
         return
     rows = conn.execute(
@@ -117,7 +130,9 @@ def judge_traits(conn, ids: list[str]) -> None:
         if resp is None:
             continue
         english = resp["answers"].get("english", {}).get("noul", 1.0)
-        rule = f"not English (Jev {english:.2f})" if english < JEV_NOT_ENGLISH else None
+        sponsored = resp["answers"].get("sponsored", {}).get("noul", 0.0)
+        rule = (f"not English (Jev {english:.2f})" if english < JEV_NOT_ENGLISH else
+                f"sponsored (Jev {sponsored:.2f})" if sponsored >= JEV_SPONSORED else None)
         conn.execute("UPDATE items SET traits = ?, rule = COALESCE(rule, ?) WHERE id = ?",
                      (json.dumps(resp["answers"]), rule, iid))
     count_tokens(conn, results)

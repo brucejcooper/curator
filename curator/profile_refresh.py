@@ -97,8 +97,8 @@ answers with probabilities; it can't do arithmetic or dates. Each request's \
 state is {{"item": {{title, summary, source, ...}}, "reader": {{"profile": \
 <profile.md>}}}}, so questions refer to `item` and `reader.profile` rather \
 than repeating the profile. These are only the reader's own questions: how \
-significant an item is as news, and whether it's rage bait, an advert, hype, \
-chatter, a template how-to or not in English, are asked separately for \
+significant an item is as news, and whether it's rage bait, an advert, \
+sponsored, hype, chatter, a template how-to or not in English, are asked separately for \
 everyone. The curator relies on `relevant` (a score, levels lowest first, \
 about fit with the reader's interests, not news importance). Keep question ids \
 stable unless there's a reason to change them. Every choice question must \
