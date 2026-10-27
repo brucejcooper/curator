@@ -183,10 +183,10 @@ def ingest(conn, found: list[dict]) -> list[str]:
             conn.execute("INSERT INTO stories VALUES (?, ?, ?, ?)", (story, it["id"], stamp, stamp))
         conn.execute(
             """INSERT INTO items (id, url, canonical, title, summary, source, author, published, fetched,
-                                  story_id, embedding, always_show, sample, image, quote, poster)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                  story_id, embedding, always_show, rule, sample, image, quote, poster)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (it["id"], it["url"], it["canonical"], it["title"], it["summary"], it["source"], it["author"],
-             it["published"], stamp, story, v.tobytes(), it["always_show"], int(random.random() < SAMPLE_RATE),
+             it["published"], stamp, story, v.tobytes(), it["always_show"], it.get("rule"), int(random.random() < SAMPLE_RATE),
              it.get("image"), json.dumps(it["quote"]) if it.get("quote") else None,
              json.dumps(it["poster"]) if it.get("poster") else None),
         )

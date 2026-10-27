@@ -62,6 +62,31 @@ def rss_image(e) -> str | None:
     return m.group(1) if m else None
 
 
+# Paid posts their source labels as such (9to5Mac's author "Sponsored Post"):
+# the whole author or a category is one of these, or the title starts with
+# one in brackets or followed by punctuation. Whole names only, so a person
+# called "… Partner" isn't one. store.migrate drops earlier ones by author.
+SPONSORED = {"sponsored", "sponsored post", "sponsored content", "paid post", "paid content",
+             "partner content", "promoted", "advertorial", "brand content"}
+SPONSORED_WORD = re.compile(r"\bsponsored\b", re.I)
+SPONSORED_TITLE = re.compile(r"^\s*(?:[\[(]\s*(sponsored|advertorial|partner content)\s*[\])]|"
+                             r"(sponsored|advertorial|partner content)\s*[:|])", re.I)
+
+
+def sponsored_label(e) -> str | None:
+    """Why an entry is labelled sponsored by its source, or None."""
+    author = (e.get("author") or "").strip()
+    if author.lower() in SPONSORED:
+        return f'author "{author}"'
+    for tag in e.get("tags") or []:
+        term = (tag.get("term") or "").strip()
+        if term.lower() in SPONSORED or SPONSORED_WORD.search(term):
+            return f'category "{term}"'
+    if m := SPONSORED_TITLE.match(e.get("title") or ""):
+        return f'title "{m.group(0).strip()}"'
+    return None
+
+
 # ── RSS / Atom ───────────────────────────────────────────────────────────────
 
 def rss(conn, http: httpx.Client, feed: dict) -> list[dict]:
@@ -90,8 +115,13 @@ def parse_feed(content: bytes, name: str, always_show: bool = False, max_age: ti
         if now() - published > max_age:
             continue
         summary = e.get("summary") or (e.get("content") or [{}])[0].get("value", "")
-        items.append(item(link, e.get("title", link), hover_text(summary), f"rss:{name}", e.get("author"),
-                          published, always_show, rss_image(e)))
+        it = item(link, e.get("title", link), hover_text(summary), f"rss:{name}", e.get("author"),
+                  published, always_show, rss_image(e))
+        # Dropped even from an always-show feed: the reader chose the feed,
+        # nobody chose its paid posts.
+        if reason := sponsored_label(e):
+            it["rule"] = f"sponsored ({reason})"
+        items.append(it)
     return items
 
 

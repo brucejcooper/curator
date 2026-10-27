@@ -56,7 +56,8 @@ def candidates(conn, user: str, keys: set[str], since: str) -> list[dict]:
 def own_leads(conn, stories: list[dict], keys: list[str]) -> None:
     """A story's lead is chosen for everyone. Where it isn't from one of this
     reader's sources (one they removed, or someone else's), they get the best
-    version that is."""
+    version that is. So do they where a rule dropped the lead (a sponsored
+    post that joined a real story)."""
     from curator.stories import best_version, source_reputation
 
     leads = [s["id"] for s in stories]
@@ -65,7 +66,7 @@ def own_leads(conn, stories: list[dict], keys: list[str]) -> None:
         chunk = leads[i:i + 500]
         theirs |= {r[0] for r in conn.execute(
             f"SELECT item_id FROM sightings WHERE item_id IN ({marks(len(chunk))}) AND source IN ({marks(len(keys))})", (*chunk, *keys))}
-    others = [s for s in stories if s["id"] not in theirs]
+    others = [s for s in stories if s["id"] not in theirs or s["rule"]]
     if not others:
         return
     reputation = source_reputation(conn)

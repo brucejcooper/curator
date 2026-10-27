@@ -394,3 +394,82 @@ def test_a_comics_hover_text_is_kept_and_posts_say_who_posted():
               "language": "en", "visibility": "public", "url": "https://m/1",
               "account": {"acct": "ana@m.example", "display_name": "Ana", "avatar_static": "https://m/ana.png"}}
     assert from_status(status, "mastodon:#x")["poster"] == {"name": "Ana", "avatar": "https://m/ana.png"}
+
+
+# ── Sponsored posts, as their source labels them ─────────────────────────────
+
+def nine_to_five(*entries) -> bytes:
+    """A 9to5Mac-shaped RSS 2.0 feed of (title, dc:creator, category) entries."""
+    from email.utils import format_datetime
+
+    when = format_datetime(datetime.now(timezone.utc))
+    items = "".join(f"""<item><title>{title}</title><link>https://9to5mac.com/2026/10/27/{n}/</link>
+      <dc:creator><![CDATA[{author}]]></dc:creator><pubDate>{when}</pubDate><category><![CDATA[{category}]]></category>
+      <description><![CDATA[<p>{title}. {"A paragraph long enough not to be a teaser, about the thing in the title. " * 4}</p>]]></description></item>"""
+                    for n, (title, author, category) in enumerate(entries))
+    return f"""<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+      <channel><title>9to5Mac</title><link>https://9to5mac.com</link>{items}</channel></rss>""".encode()
+
+
+COPILOT = ("Copilot Money gets even better with new AI-powered Money Assistant", "Sponsored Post", "News")
+NEWS = ("Apple releases iOS 26.1 with Liquid Glass tweaks", "Ryan Christoffel", "News")
+
+
+def test_posts_labelled_sponsored_are_dropped_for_everyone():
+    from curator.collect import parse_feed
+
+    sponsored, news = parse_feed(nine_to_five(COPILOT, NEWS), "9to5Mac")
+    assert sponsored["rule"] == 'sponsored (author "Sponsored Post")'
+    assert news.get("rule") is None
+    rules = lambda *e: [it.get("rule") for it in parse_feed(nine_to_five(*e), "9to5Mac")]
+    assert rules(("A new way to budget", "Jane Doe", "Sponsored"), ("Deals", "Jane Doe", "Sponsored by Acme"),
+                 ("Deals", "Jane Doe", "Partner Content")) == [
+        'sponsored (category "Sponsored")', 'sponsored (category "Sponsored by Acme")', 'sponsored (category "Partner Content")']
+    assert rules(("[Sponsored] A new way to budget", "Jane Doe", "News"), ("(Sponsored) Budget", "Jane Doe", "News"),
+                 ("Sponsored: Budget", "Jane Doe", "News"), ("Sponsored | Budget", "Jane Doe", "News"),
+                 ("Advertorial: Budget", "Jane Doe", "News"), ("Partner content: Budget", "Jane Doe", "News")) == [
+        'sponsored (title "[Sponsored]")', 'sponsored (title "(Sponsored)")', 'sponsored (title "Sponsored:")',
+        'sponsored (title "Sponsored |")', 'sponsored (title "Advertorial:")', 'sponsored (title "Partner content:")']
+    # Only labels: a person's name, a word in the title, a tag merely containing one.
+    assert rules(("Budgeting apps compared", "Sam Partner", "News"), ("Sponsored posts are everywhere", "Jane Doe", "News"),
+                 ("Who sponsored the race?", "Jane Doe", "Unsponsored")) == [None, None, None]
+    # Even from a feed the reader always sees in full: nobody chose its paid posts.
+    always = parse_feed(nine_to_five(COPILOT), "9to5Mac", always_show=True)
+    assert always[0]["always_show"] == 1 and always[0]["rule"] == 'sponsored (author "Sponsored Post")'
+
+
+def test_a_sponsored_post_is_kept_but_never_published(alex, db, monkeypatch):
+    from curator.collect import parse_feed
+    from curator.publish import select
+    from curator.stories import ingest
+
+    monkeypatch.setattr("curator.stories.fill_text", lambda items: None)
+    # Its own story, and (the same vector as the news) one joining a real story.
+    monkeypatch.setattr("curator.stories.embed", lambda texts: np.eye(384, dtype=np.float32)[[0, 1, 1]][: len(texts)])
+    lone = ("Track every dollar with Copilot Money", "Sponsored Post", "News")
+    found = parse_feed(nine_to_five(lone, NEWS, COPILOT), "Sky News Feed")
+    new = ingest(db, found)
+    assert len(new) == 3  # stored, so it stays deduplicated and you can see why it went
+    rows = {r["title"]: r for r in db.execute("SELECT * FROM items")}
+    assert rows[lone[0]]["rule"] == rows[COPILOT[0]]["rule"] == 'sponsored (author "Sponsored Post")'
+    assert rows[NEWS[0]]["rule"] is None and rows[NEWS[0]]["story_id"] == rows[COPILOT[0]]["story_id"]
+    # Even as the story's lead, the reader gets the real version.
+    db.execute("UPDATE stories SET lead_id = ? WHERE id = ?", (rows[COPILOT[0]]["id"], rows[NEWS[0]]["story_id"]))
+    db.executemany("INSERT INTO judgments (user, item_id, jev_score, local_score) VALUES ('alex', ?, 0.95, 0.9)", [(i,) for i in new])
+    db.commit()
+    assert [s["title"] for s in select(db, alex)] == [NEWS[0]]
+
+
+def test_items_collected_before_are_dropped_on_upgrade(db):
+    from curator import store
+
+    add_story(db, "paid", "rss:9to5Mac", 0.9)
+    add_story(db, "news", "rss:9to5Mac", 0.9)
+    add_story(db, "langs", "rss:9to5Mac", 0.9)
+    db.execute("UPDATE items SET author = ' Sponsored Post ' WHERE id = 'paid'")
+    db.execute("UPDATE items SET author = 'Ryan Christoffel' WHERE id = 'news'")
+    db.execute("UPDATE items SET author = 'Sponsored Post', rule = 'language de (0.99)' WHERE id = 'langs'")
+    store.migrate(db)
+    store.migrate(db)  # twice changes nothing
+    rules = dict(db.execute("SELECT id, rule FROM items").fetchall())
+    assert rules == {"paid": 'sponsored (author "Sponsored Post")', "news": None, "langs": "language de (0.99)"}

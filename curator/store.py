@@ -155,6 +155,11 @@ def migrate(conn: sqlite3.Connection) -> None:
                                 SELECT ?, id, jev, jev_score, local, local_score FROM items
                                 WHERE jev IS NOT NULL OR local IS NOT NULL""", (OWNER,))
                 conn.execute("UPDATE items SET traits = json_extract(jev, '$.answers') WHERE jev IS NOT NULL")
+        # Items collected before paid posts were dropped (collect.SPONSORED).
+        from curator.collect import SPONSORED
+
+        conn.execute(f"""UPDATE items SET rule = 'sponsored (author "' || trim(author) || '")'
+                         WHERE rule IS NULL AND lower(trim(author)) IN ({','.join('?' * len(SPONSORED))})""", sorted(SPONSORED))
         # Your own home timeline is a per-reader source now.
         conn.execute("UPDATE items SET source = ? WHERE source = 'mastodon:home'", (f"mastodon:home:{OWNER}",))
     if "sightings" in tables:

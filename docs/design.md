@@ -26,7 +26,8 @@ picks what each reader would want, learning from what they actually read.
    day's post per OS). Each story's
    lead is its most informative version: a fuller summary, first to report,
    a source the readers trust, fresh.
-3. **Judge**, cheapest first. Rules for everyone (not English, hashtag soup).
+3. **Judge**, cheapest first. Rules for everyone (not English, hashtag soup,
+   labelled sponsored by its source).
    Then the item's **traits**, asked once for everyone: how significant it
    is as news, whether it's a news report, rage bait, an advert, hype,
    personal chatter or a template how-to. Then, for each reader who follows
