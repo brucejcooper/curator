@@ -45,8 +45,10 @@ const store = {
 
 // ---------------------------------------------------------------- diagnostics
 // A rolling log of what the app did and why, for working out odd behaviour
-// on a phone where there are no developer tools. Settings → Copy diagnostics
-// puts it on the clipboard. It records ids, positions, paths and timings
+// on a phone where there are no developer tools. Settings → Send diagnostics
+// puts it in the server's journal under a short id, for the majordomo to read
+// (/srv/logs); Save as a file gives the share sheet (Files, Element) or a
+// download; Copy puts it on the clipboard. It records ids, positions, paths and timings
 // only: no post text, names, tokens or query strings. It survives reloads,
 // since iOS reloading the app is often part of the story.
 
@@ -1107,6 +1109,53 @@ class Reader {
     showToast('Select all and copy the text below.');
   }
 
+  // Into the server's journal (POST /api/diagnostics), under the id it
+  // answers with: telling the majordomo that id is all it then takes. The id
+  // stays in Settings, as the toast goes after a few seconds.
+  async sendDiagnostics() {
+    diag.log('diagnostics-sent');
+    const out = $('#diagnostics-sent');
+    const button = $('#send-diagnostics');
+    button.disabled = true;
+    try {
+      const { id, time } = await this.api.sendDiagnostics(this.diagnosticsText());
+      const at = new Date(time).toTimeString().slice(0, 5);
+      out.textContent = `Sent (id ${id}, ${at}). Tell the majordomo "sent diagnostics ${id}".`;
+      out.hidden = false;
+      showToast(out.textContent);
+    } catch (err) {
+      out.textContent = `Couldn't send them (${err.message}). Save as a file instead.`;
+      out.hidden = false;
+      showToast(out.textContent);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  // A .txt file through the share sheet (on iOS: Save to Files, or Element
+  // straight into a room), or a download where files can't be shared.
+  async saveDiagnostics() {
+    diag.log('diagnostics-saved');
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const name = `curator-diagnostics-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.txt`;
+    const file = new File([this.diagnosticsText()], name, { type: 'text/plain' });
+    if (navigator.canShare?.({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file] });
+        return;
+      } catch (err) {
+        if (err.name === 'AbortError') return; // closed the share sheet
+      }
+    }
+    const url = URL.createObjectURL(file);
+    const a = el('a', { href: url, download: name, hidden: true });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+
   openSettings() {
     const dlg = $('#settings');
     $('#signed-in-as').textContent = `Signed in as ${this.me.name}`;
@@ -1146,6 +1195,8 @@ class Reader {
         text: `${u.name} (${u.user})${u.admin ? ', admin' : ''}: ${u.profile_version ? `profile v${u.profile_version}` : 'not set up yet'}, ${u.votes} votes, Mastodon ${u.mastodon || 'not connected'}${u.agent ? ', Mac agent' : ''}`,
       })))).catch(() => {});
     }
+    $('#send-diagnostics').onclick = () => this.sendDiagnostics();
+    $('#save-diagnostics').onclick = () => this.saveDiagnostics();
     $('#copy-diagnostics').onclick = () => this.copyDiagnostics();
     $('#app-version').textContent = versionLabel();
     $('#check-update').onclick = async () => {

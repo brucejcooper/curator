@@ -188,6 +188,30 @@ def event(conn, who: Who, request, body):
     return {"ok": True}
 
 
+DIAGNOSTICS_MAX = 128 * 1024
+diagnostics_log = logging.getLogger("curator.diagnostics")
+CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def diagnostics(conn, who: Who, request, body):
+    """{text}: the reader app's diagnostics (Settings → Send diagnostics), into
+    the journal under a short id, a line per entry, for the majordomo to read
+    from /srv/logs. The app's log holds ids, paths and timings only."""
+    text = body.get("text") if isinstance(body, dict) else None
+    if not isinstance(text, str) or not text.strip():
+        return JSONResponse({"error": "nothing to send"}, status_code=422)
+    size = len(text.encode())
+    if size > DIAGNOSTICS_MAX:
+        return JSONResponse({"error": "too long"}, status_code=413)
+    # Control characters out, so no line can pass for another journal entry.
+    lines = [CONTROL.sub(" ", line) for line in text.split("\n")]
+    id = os.urandom(3).hex()
+    diagnostics_log.info("diagnostics %s: from %s, %d lines, %d bytes", id, who.id, len(lines), size)
+    for i, line in enumerate(lines, 1):
+        diagnostics_log.info("diagnostics %s %d/%d %s", id, i, len(lines), line)
+    return {"id": id, "time": now()}
+
+
 # ── Profile: how the curator sees you ────────────────────────────────────────
 
 def as_dict(p: Profile) -> dict:
@@ -558,6 +582,7 @@ app = Starlette(
         Route("/api/mastodon", api(mastodon_stop, needs_profile=False), methods=["DELETE"]),
         Route(mastodon_connect.CALLBACK, mastodon_callback),
         Route("/api/admin/users", api(admin_users, needs_profile=False)),
+        Route("/api/diagnostics", api(diagnostics, needs_profile=False), methods=["POST"]),
         Route("/f/{secret}/{name}", feed),
         Route("/agent/events", agent_events, methods=["POST"]),
         Route("/agent/rules", agent_rules, methods=["POST"]),

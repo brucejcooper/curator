@@ -126,6 +126,10 @@ Stories get a Mastodon-style id (milliseconds << 16) from when they were
 first seen. The position is kept on the server and only moves forward, so devices
 can't undo each other's progress. The app never talks to Mastodon itself;
 replying and boosting happen on your server ("See original").
+Its diagnostics log (ids, paths and timings only) goes from Settings to the
+server's journal under a short id (`POST /api/diagnostics`, a line per entry),
+where the majordomo reads it in `/srv/logs`; or out as a file through the
+share sheet.
 
 ## Privacy
 

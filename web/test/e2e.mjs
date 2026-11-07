@@ -189,6 +189,11 @@ async function fakes(ctx) {
     }
     if (url.pathname === '/api/admin/users') return json(route, { users: [{ user: 'alex', name: 'Alex', admin: true, profile_version: 2, votes: 3, mastodon: 'mastodon.au', agent: false }] });
     if (url.pathname === '/api/settings') return json(route, { decider: body.decider });
+    if (url.pathname === '/api/diagnostics') {
+      if (state.failDiagnostics) return json(route, { error: 'boom' }, 503);
+      state.diagnostics = body.text;
+      return json(route, { id: '0a1b2c', time: '2026-11-08T06:41:00+00:00' });
+    }
     const stall = async () => {
       await new Promise((r) => setTimeout(r, state.stallMs));
       return route.fulfill({ status: 504 }).catch(() => {}); // the app has given up by now
@@ -460,6 +465,36 @@ assert.match(report, / ready screen=reader sinceOriginMs=\d+ nodes=\d+ cards=\d+
 assert.match(report, /^memory: \d+ DOM nodes, \d+ cards, \d+ images, \d+ log entries, localStorage \d+ KB$/m);
 assert.match(report, /^heap: heap size not measurable here \(iOS Safari/m);
 assert.ok(!report.includes('the-code') && !/[?&](code|state)=/.test(report), 'no sign-in code in the report');
+// Send diagnostics: the same report, to the server, and the id it answers with.
+await page.click('#send-diagnostics');
+await page.waitForSelector('#diagnostics-sent:not([hidden])');
+assert.match(await page.textContent('#diagnostics-sent'), /^Sent \(id 0a1b2c, \d\d:\d\d\)\. Tell the majordomo "sent diagnostics 0a1b2c"\.$/);
+assert.match(state.diagnostics, /^Reader diagnostics\n/);
+assert.match(state.diagnostics, / diagnostics-copied\n.* diagnostics-sent$/s);
+state.failDiagnostics = true;
+await page.click('#send-diagnostics');
+await page.waitForFunction(() => document.querySelector('#diagnostics-sent').textContent.startsWith("Couldn't send"));
+assert.match(await page.textContent('#diagnostics-sent'), /Save as a file instead\.$/);
+state.failDiagnostics = false;
+// Save as a file: the share sheet with a .txt file where files can be shared...
+await page.evaluate(() => {
+  navigator.canShare = (data) => !!data.files;
+  navigator.share = async (data) => {
+    const [f] = data.files;
+    window.shared = { name: f.name, type: f.type, text: await f.text() };
+  };
+});
+await page.click('#save-diagnostics');
+await page.waitForFunction(() => window.shared);
+const shared = await page.evaluate(() => window.shared);
+assert.match(shared.name, /^curator-diagnostics-\d{8}-\d{4}\.txt$/);
+assert.equal(shared.type, 'text/plain');
+assert.match(shared.text, /^Reader diagnostics\n[^]* diagnostics-saved$/);
+// ...and a download where they can't.
+await page.evaluate(() => { navigator.canShare = () => false; });
+const [download] = await Promise.all([page.waitForEvent('download'), page.click('#save-diagnostics')]);
+assert.match(download.suggestedFilename(), /^curator-diagnostics-\d{8}-\d{4}\.txt$/);
+assert.match(await readFile(await download.path(), 'utf8'), /^Reader diagnostics\n/);
 await page.click('#settings-close');
 
 // Reload: picks up where we were, read entries above; the two that arrived

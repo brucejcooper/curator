@@ -371,6 +371,11 @@ export class Api {
     return this.request('/api/admin/users');
   }
 
+  // The diagnostics text, into the server's journal for the majordomo: { id, time }.
+  sendDiagnostics(text) {
+    return this.request('/api/diagnostics', { method: 'POST', body: { text } });
+  }
+
   event(target, kind) {
     return this.request('/api/event', { method: 'POST', body: { ...target, kind }, keepalive: true, quiet: true }).catch(() => {});
   }

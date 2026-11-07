@@ -28,7 +28,9 @@ the curator's `/api/` (see `../README.md`).
 - **How the curator sees you**: your profile, every version and what changed,
   and editing it by hand (Settings).
 - **Settings**: connect Mastodon, your feed's address for other readers, a
-  token for the Mac agent, which classifier decides.
+  token for the Mac agent, which classifier decides, and the diagnostics:
+  sent to the server's journal under an id (`POST /api/diagnostics`), saved
+  as a file (the share sheet, or a download), or copied.
 - **New posts**: checked every 2 minutes while caught up, when the app comes
   back to the foreground, at the end of the page, and by pulling up.
 - **Updates**: the server's `version.json` is the deployed version; the app

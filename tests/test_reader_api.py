@@ -179,3 +179,24 @@ def test_status_shows_each_feed_s_schedule(client, db):
     page = client.get("/status").text
     feeds = page.split("<h2>Feeds</h2>")[1]
     assert "Sky News Feed" in feeds and "<td>4 h</td>" in feeds and "<td>304</td><td>adaptive</td>" in feeds
+
+
+def test_diagnostics_go_to_the_journal_a_line_each(client, caplog):
+    # Settings → Send diagnostics: the app's log, into the journal under a short
+    # id, for the majordomo to read; any reader, onboarded or not.
+    caplog.set_level("INFO", logger="curator.diagnostics")
+    send = lambda text, who="alex": client.post("/api/diagnostics", json={"text": text}, headers=auth(who) if who else {})
+    assert send("x", None).status_code == 401
+    assert send("x" * (128 * 1024 + 1)).status_code == 413
+    assert send("  ").status_code == 422
+    text = "Reader diagnostics\n12:00:00.000 api path=/api/me\nforged\rline\x1b[2J"
+    res = send(text)
+    assert res.status_code == 200
+    id = res.json()["id"]
+    assert re.fullmatch(r"[0-9a-f]{6}", id) and res.json()["time"]
+    lines = [r.getMessage() for r in caplog.records if r.name == "curator.diagnostics"]
+    assert lines == [f"diagnostics {id}: from alex, 3 lines, {len(text)} bytes",
+                     f"diagnostics {id} 1/3 Reader diagnostics",
+                     f"diagnostics {id} 2/3 12:00:00.000 api path=/api/me",
+                     f"diagnostics {id} 3/3 forged line [2J"]
+    assert send("before onboarding", "sam").status_code == 200
