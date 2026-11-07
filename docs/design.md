@@ -13,6 +13,16 @@ picks what each reader would want, learning from what they actually read.
    and each connected reader's own Mastodon home timeline. A reply stands for
    its conversation: the conversation's first post is what gets judged.
    A quote post carries the text of the post it quotes.
+   Each feed is fetched only when it's due, as often as it changes: about
+   half the median gap between its last ten entries' dates, between one
+   cycle and 4 hours (a feed without dates: twice as often after a new
+   entry, half again as long after none). The publisher's `<ttl>`,
+   `Cache-Control: max-age` and `Expires` are honoured as the soonest it's
+   fetched again, as is `Retry-After` on a 429 or 503, up to a day. Errors
+   back off, doubling with each in a row, up to a day. Requests stay
+   conditional (ETag, Last-Modified). `/status` lists each feed's interval,
+   next fetch, last answer and what set it; `last_cycle` counts the feeds
+   fetched and skipped.
    A feed item that comes with no text of its own (Hacker News' is just
    links and points) or only a teaser ("… more…", "[…]") gets the
    article's first few paragraphs and picture, fetched once when it's new;

@@ -1,6 +1,7 @@
 """Where things live, and the settings that apply to everyone."""
 
 import os
+from datetime import timedelta
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -15,6 +16,8 @@ PUBLIC_URL = os.environ.get("CURATOR_PUBLIC_URL", "http://localhost:8000")
 # Where the code lives (feeds link to it; fetchers name it in User-Agent).
 SITE = os.environ.get("CURATOR_SITE", PUBLIC_URL)
 USER_AGENT = f"curator/0.1 (+{SITE})"
+# How often the fast loop runs (collect, judge, publish).
+CYCLE = timedelta(minutes=int(os.environ.get("CURATOR_CYCLE_MINUTES", "15")))
 # Sign-in: your OIDC provider (authentik, ...) and the public client the reader app uses.
 OIDC_ISSUER = os.environ.get("OIDC_ISSUER", "")
 OIDC_CLIENT_ID = os.environ.get("OIDC_CLIENT_ID", "curator")

@@ -32,7 +32,8 @@ def cycle() -> dict:
     conn = store.connect()
     try:
         everyone = profiles(conn)
-        found = collect_all(conn, everyone)
+        feeds: dict = {}
+        found = collect_all(conn, everyone, feeds)
         new = ingest(conn, found)
         if new:
             apply_shared_rules(conn, new)
@@ -46,7 +47,7 @@ def cycle() -> dict:
             published[p.user] = publish(conn, p)
         result = {
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "found": len(found), "new": len(new), "published": published,
+            "found": len(found), "new": len(new), **feeds, "published": published,
             "seconds": round(time.monotonic() - started, 1),
         }
         store.put(conn, "last_cycle", result)

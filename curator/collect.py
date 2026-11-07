@@ -4,8 +4,10 @@ sources (each fetched once), and each connected reader's own Mastodon home
 timeline."""
 
 import logging
+import math
 import re
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 import feedparser
 import httpx
@@ -13,7 +15,7 @@ import yaml
 
 from curator import instagram, people, store
 from curator.canon import item_id, plain, short_title
-from curator.config import OWNER, USER_AGENT
+from curator.config import CYCLE, OWNER, USER_AGENT
 
 log = logging.getLogger(__name__)
 UA = {"User-Agent": USER_AGENT}
@@ -88,30 +90,169 @@ def sponsored_label(e) -> str | None:
 
 
 # ── RSS / Atom ───────────────────────────────────────────────────────────────
+# Each feed is fetched as often as it changes, within the fast loop: about
+# half the usual gap between its entries, between one cycle and FEED_CEILING.
+# The publisher's hints (<ttl>, Cache-Control: max-age, Expires, Retry-After)
+# are a lower bound: never fetched sooner than they ask, up to HINT_CAP.
+# Errors back off, doubling with each in a row. The feed's state is its
+# rss:{url} kv record, along with its ETag / Last-Modified.
+FEED_CEILING = timedelta(hours=4)
+HINT_CAP = timedelta(days=1)
+DATED_ENTRIES = 10  # the most recent entries whose gaps set the interval
+# The ones the publisher sets aren't moved earlier for being nearly due.
+HINTED = ("ttl", "max-age", "expires", "retry-after")
 
-def rss(conn, http: httpx.Client, feed: dict) -> list[dict]:
-    """Conditional GET with the feed's last ETag / Last-Modified."""
+
+def parse_seconds(value) -> float | None:
+    """A number of seconds (or <ttl>'s minutes), at most HINT_CAP's worth;
+    None for what isn't one (nan and inf included)."""
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    return min(max(n, 0), HINT_CAP.total_seconds()) if math.isfinite(n) else None
+
+
+def http_date(value: str | None) -> datetime | None:
+    try:
+        dt = parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def cache_hint(headers, now_: datetime) -> tuple[timedelta, str] | None:
+    """How long the response says it stays fresh: max-age, else Expires.
+    no-cache and no-store say nothing about when to come back."""
+    control = {k.strip().lower(): v.strip() for k, _, v in
+               (d.partition("=") for d in (headers.get("cache-control") or "").split(",")) if k.strip()}
+    if "no-cache" in control or "no-store" in control:
+        return None
+    if (age := parse_seconds(control.get("max-age", "").strip('"'))) is not None:
+        return timedelta(seconds=age), "max-age"
+    if expires := http_date(headers.get("expires")):
+        return expires - now_, "expires"
+    return None
+
+
+def retry_after(headers, now_: datetime) -> timedelta | None:
+    """Retry-After, in seconds or as an HTTP date."""
+    value = (headers.get("retry-after") or "").strip()
+    if (secs := parse_seconds(value)) is not None:
+        return timedelta(seconds=secs)
+    when = http_date(value)
+    return when - now_ if when else None
+
+
+def clamp(interval: timedelta) -> timedelta:
+    return min(max(interval, CYCLE), FEED_CEILING)
+
+
+def from_dates(dates: list[datetime]) -> timedelta | None:
+    """Half the median gap between the most recent entries, if they're dated."""
+    recent = sorted(dates, reverse=True)[:DATED_ENTRIES]
+    gaps = sorted(a - b for a, b in zip(recent, recent[1:]))
+    return clamp(gaps[len(gaps) // 2] / 2) if gaps else None
+
+
+def schedule(state: dict, status: int | None, headers, dates: list[datetime] | None, marker: str | None,
+             ttl: str | None, now_: datetime) -> dict:
+    """A feed's state after a fetch: when to fetch it next, and why.
+    `status` is the HTTP status (None: it couldn't be fetched or read);
+    `dates` the entries' dates and `marker` what identifies the newest entry
+    (on a 200); `ttl` the feed's <ttl>, in minutes."""
+    state = dict(state)
+    interval = timedelta(seconds=state.get("interval") or CYCLE.total_seconds())
+    if status in (200, 304):
+        state["errors"] = 0
+        if status == 200:
+            new = marker != state.get("marker")
+            state.update(marker=marker, dated=len(dates or []) >= 2, ttl=parse_seconds(ttl))
+            state["last"] = "200-new" if new else "200"
+            if (dated := from_dates(dates or [])) is not None:
+                interval = dated
+            else:
+                interval = clamp(interval / 2 if new else interval * 1.5)
+        else:
+            state["last"] = "304"
+            if not state.get("dated"):
+                interval = clamp(interval * 1.5)
+        wait, reason = interval, "adaptive"
+        hints = [(timedelta(minutes=state["ttl"]), "ttl")] if state.get("ttl") else []
+        if hint := cache_hint(headers, now_):
+            hints.append(hint)
+        for hint, why in hints:
+            hint = min(hint, HINT_CAP)
+            if hint > wait:
+                wait, reason = hint, why
+    else:
+        state["errors"] = state.get("errors", 0) + 1
+        state["last"] = str(status or "error")
+        wait, reason = min(interval * 2 ** state["errors"], HINT_CAP), "error"
+        if status in (429, 503) and (later := retry_after(headers, now_)) is not None:
+            wait, reason = min(max(later, timedelta(0)), HINT_CAP), "retry-after"
+    state.update(interval=interval.total_seconds(), next=iso(now_ + wait), reason=reason, fetched=iso(now_))
+    return state
+
+
+def due(state: dict, now_: datetime) -> bool:
+    """Whether a feed is to be fetched in the cycle starting `now_`. Its own
+    schedule is met by the cycle nearest to it (cycles drift by seconds, so
+    "at most now" would skip one); a publisher's, by the first one after."""
+    if not state.get("next"):
+        return True
+    slack = timedelta(0) if state.get("reason") in HINTED else CYCLE / 2
+    return datetime.fromisoformat(state["next"]) <= now_ + slack
+
+
+def rss(conn, http: httpx.Client, feed: dict, now_: datetime | None = None) -> list[dict]:
+    """Conditional GET with the feed's last ETag / Last-Modified; schedules
+    its next fetch, whatever the answer."""
     key = f"rss:{feed['url']}"
-    cache = store.get(conn, key, {})
-    headers = {k: v for k, v in (("If-None-Match", cache.get("etag")), ("If-Modified-Since", cache.get("modified"))) if v}
-    resp = http.get(feed["url"], headers=headers, follow_redirects=True)
-    if resp.status_code == 304:
-        return []
-    resp.raise_for_status()
-    store.put(conn, key, {"etag": resp.headers.get("etag"), "modified": resp.headers.get("last-modified")})
-    conn.commit()  # don't hold the write lock across the next fetch
-    return parse_feed(resp.content, feed["name"], feed.get("always_show", False))
+    state = store.get(conn, key, {})
+    now_ = now_ or now()
+    headers = {k: v for k, v in (("If-None-Match", state.get("etag")), ("If-Modified-Since", state.get("modified"))) if v}
+    items, status, resp_headers, dates, marker, ttl = [], None, {}, None, None, None
+    try:
+        resp = http.get(feed["url"], headers=headers, follow_redirects=True)
+        status, resp_headers = resp.status_code, resp.headers
+        if resp.is_success:  # a 203 from a proxy is a feed too
+            status = 200
+            parsed = feedparser.parse(resp.content)
+            if parsed.bozo and not parsed.entries:
+                status = None
+                raise ValueError(f"not a feed: {parsed.get('bozo_exception')}")
+            state.update(etag=resp.headers.get("etag"), modified=resp.headers.get("last-modified"))
+            dates = [d for e in parsed.entries if (d := entry_date(e)) and d <= now_ + timedelta(days=1)]
+            first = parsed.entries[0] if parsed.entries else {}
+            marker = iso(max(dates)) if dates else first.get("id") or first.get("link")
+            ttl = parsed.feed.get("ttl")
+            items = feed_items(parsed, feed["name"], feed.get("always_show", False))
+        elif status != 304:
+            resp.raise_for_status()  # 1xx, 3xx and errors
+    finally:
+        # The error still goes up, to be logged; the feed waits longer.
+        store.put(conn, key, {**schedule(state, status, resp_headers, dates, marker, ttl, now_), "name": feed["name"]})
+        conn.commit()  # don't hold the write lock across the next fetch
+    return items
+
+
+def entry_date(e) -> datetime | None:
+    stamp = e.get("published_parsed") or e.get("updated_parsed")
+    return datetime(*stamp[:6], tzinfo=timezone.utc) if stamp else None
 
 
 def parse_feed(content: bytes, name: str, always_show: bool = False, max_age: timedelta = MAX_AGE) -> list[dict]:
-    parsed = feedparser.parse(content)
+    return feed_items(feedparser.parse(content), name, always_show, max_age)
+
+
+def feed_items(parsed, name: str, always_show: bool = False, max_age: timedelta = MAX_AGE) -> list[dict]:
     items = []
     for e in parsed.entries:
         link = e.get("link")
         if not link:
             continue
-        stamp = e.get("published_parsed") or e.get("updated_parsed")
-        published = datetime(*stamp[:6], tzinfo=timezone.utc) if stamp else now()
+        published = entry_date(e) or now()
         if now() - published > max_age:
             continue
         summary = e.get("summary") or (e.get("content") or [{}])[0].get("value", "")
@@ -375,16 +516,21 @@ def bluesky_person(conn, http: httpx.Client, handle: str) -> list[dict]:
     return [it for p in posts if (it := from_bsky(p, f"bluesky:@{handle}"))]
 
 
-def collect_all(conn, profiles: list) -> list[dict]:
-    """New items from everyone's sources, and each connected reader's home timeline."""
+def collect_all(conn, profiles: list, tally: dict | None = None) -> list[dict]:
+    """New items from everyone's sources, and each connected reader's home
+    timeline. `tally` collects how many feeds were fetched, and skipped (not due)."""
     sources = shared_sources(profiles)
     found: list[dict] = []
+    started = now()
+    feeds = [f for f in sources["rss"] if due(store.get(conn, f"rss:{f['url']}", {}), started)]
+    if tally is not None:
+        tally.update(feeds_fetched=len(feeds), feeds_skipped=len(sources["rss"]) - len(feeds))
     with httpx.Client(headers=UA, timeout=30) as http:
         def feed_job(f):
             items = rss(conn, http, f)
             # Seen under each reader's name for this feed.
             return items + [{**it, "source": f"rss:{name}"} for name in sorted(f["names"] - {f["name"]}) for it in items]
-        jobs = [(f"rss {f['name']}", lambda f=f: feed_job(f)) for f in sources["rss"]]
+        jobs = [(f"rss {f['name']}", lambda f=f: feed_job(f)) for f in feeds]
         jobs += [(f"bluesky #{t}", lambda t=t: bluesky(conn, http, t)) for t in sorted(sources["bluesky_tags"])]
         jobs += [(f"bluesky @{h}", lambda h=h: bluesky_person(conn, http, h)) for h in sorted(sources["bluesky_people"])]
         for name, job in jobs:

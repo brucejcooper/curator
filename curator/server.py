@@ -30,6 +30,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from curator import instagram, mastodon_connect, people, reader, store
 from curator.auth import User, user_from_token
+from curator.collect import shared_sources
 from curator.config import PUBLIC_URL
 from curator.people import Profile
 from curator.publish import feed_folder
@@ -416,6 +417,7 @@ async def status(request: Request) -> Response:
                 Mastodon {'connected' if r['masto'] else 'not connected'}; deciding: <b>{d}</b>
                 <form method="post" action="/status/decider" style="display:inline"><input type="hidden" name="user" value="{html.escape(r['id'])}">
                 <input type="hidden" name="decider" value="{other}"><button>Switch to {other}</button></form></td></tr>""")
+        feeds = feed_rows(conn)
     finally:
         conn.close()
     rows = "".join(f"<tr><th>{html.escape(str(k))}</th><td>{html.escape(str(v))}</td></tr>" for k, v in [
@@ -426,8 +428,32 @@ async def status(request: Request) -> Response:
     page = f"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>Curator status</title>
 <style>body{{font:15px system-ui;margin:16px;max-width:900px}}th{{text-align:left;padding-right:1em;vertical-align:top}}td{{word-break:break-word}}</style>
-<h1>Curator</h1><table>{rows}</table><h2>Readers</h2><table>{''.join(per)}</table>"""
+<h1>Curator</h1><table>{rows}</table><h2>Readers</h2><table>{''.join(per)}</table>
+<h2>Feeds</h2><table><tr><th>Feed</th><th>Every</th><th>Next</th><th>Last</th><th>Why</th></tr>{feeds}</table>"""
     return HTMLResponse(page)
+
+
+def span(seconds: float) -> str:
+    minutes = round(seconds / 60)
+    return f"{minutes} min" if minutes < 120 else f"{minutes / 60:.3g} h"
+
+
+def feed_rows(conn) -> str:
+    """Everyone's feeds, soonest fetch first: how often each is fetched, when
+    next, what it last answered, and what set the time."""
+    everyone = [p for u in people.readers(conn) if (p := people.profile(conn, u))]
+    now = datetime.now(timezone.utc)
+    feeds = sorted(((f, store.get(conn, f"rss:{f['url']}", {})) for f in shared_sources(everyone)["rss"]),
+                   key=lambda fs: (fs[1].get("next") or "", fs[0]["name"]))
+    rows = []
+    for f, s in feeds:
+        nxt = datetime.fromisoformat(s["next"]) if s.get("next") else None
+        when = (f"{nxt.astimezone():%a %H:%M} (in {span(max((nxt - now).total_seconds(), 0))})" if nxt else "next cycle")
+        cells = [span(s["interval"]) if s.get("interval") else "", when,
+                 s.get("last", "") + (f" ×{s['errors']}" if s.get("errors") else ""), s.get("reason", "new")]
+        rows.append(f'<tr><th title="{html.escape(f["url"])}">{html.escape(f["name"])}</th>'
+                    + "".join(f"<td>{html.escape(c)}</td>" for c in cells) + "</tr>")
+    return "".join(rows)
 
 
 async def set_decider(request: Request) -> Response:

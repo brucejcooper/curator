@@ -168,3 +168,14 @@ def test_every_response_is_timed_and_logged_without_secrets(client, db, alex, ca
     assert any(line.startswith("GET /styles.css 304 ") and line.endswith(" cached") for line in lines)
     text = "\n".join(lines)
     assert secret not in text and "hush" not in text and "the-code" not in text and "?" not in text
+
+
+def test_status_shows_each_feed_s_schedule(client, db):
+    from curator import store
+
+    store.put(db, "rss:https://sky.example/rss", {"interval": 14400, "next": "2026-11-08T10:00:00+00:00",
+                                                  "last": "304", "reason": "adaptive", "errors": 0})
+    db.commit()
+    page = client.get("/status").text
+    feeds = page.split("<h2>Feeds</h2>")[1]
+    assert "Sky News Feed" in feeds and "<td>4 h</td>" in feeds and "<td>304</td><td>adaptive</td>" in feeds

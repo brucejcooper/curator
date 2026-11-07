@@ -10,10 +10,10 @@ from zoneinfo import ZoneInfo
 import uvicorn
 
 from curator import pipeline, store
+from curator.config import CYCLE
 from curator.server import app
 
 log = logging.getLogger("curator")
-EVERY = timedelta(minutes=int(os.environ.get("CURATOR_CYCLE_MINUTES", "15")))
 DAILY_AT = os.environ.get("CURATOR_DAILY_AT", "04:30")  # local time (TZ)
 
 
@@ -55,7 +55,7 @@ async def loop() -> None:
                 daily_at = next_daily(now)
                 await asyncio.to_thread(pipeline.daily)
             if now >= next_cycle:
-                next_cycle = now + EVERY
+                next_cycle = now + CYCLE
                 await asyncio.to_thread(pipeline.cycle)
             elif app.state.rescore:
                 users, app.state.rescore = set(app.state.rescore), set()
