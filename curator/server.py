@@ -34,6 +34,7 @@ from curator.collect import shared_sources
 from curator.config import PUBLIC_URL
 from curator.people import Profile
 from curator.publish import feed_folder
+from curator.social import BLUESKY_EVERY
 
 WEB = Path(__file__).resolve().parent.parent / "web"
 VERSION = os.environ.get("CURATOR_VERSION", "")  # the deployed commit; the app reloads when it changes
@@ -426,6 +427,7 @@ async def status(request: Request) -> Response:
     conn = store.connect()
     try:
         last = store.get(conn, "last_cycle", {})
+        last_social = store.get(conn, "last_social_cycle", {})
         day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds")
         counts = conn.execute("SELECT COUNT(*), SUM(rule IS NOT NULL), SUM(traits IS NOT NULL) FROM items WHERE fetched >= ?",
                               (day_ago,)).fetchone()
@@ -445,7 +447,7 @@ async def status(request: Request) -> Response:
     finally:
         conn.close()
     rows = "".join(f"<tr><th>{html.escape(str(k))}</th><td>{html.escape(str(v))}</td></tr>" for k, v in [
-        ("Last cycle", json.dumps(last)),
+        ("Last cycle", json.dumps(last)), ("Last social cycle", json.dumps(last_social)),
         ("Items (24 h)", counts[0]), ("Dropped for everyone", counts[1] or 0), ("With traits", counts[2] or 0),
         ("Jev input tokens today", f"{tokens:,} (≈ ${tokens * 0.042 / 1e6:.3f})"),
     ])
@@ -453,6 +455,7 @@ async def status(request: Request) -> Response:
 <title>Curator status</title>
 <style>body{{font:15px system-ui;margin:16px;max-width:900px}}th{{text-align:left;padding-right:1em;vertical-align:top}}td{{word-break:break-word}}</style>
 <h1>Curator</h1><table>{rows}</table><h2>Readers</h2><table>{''.join(per)}</table>
+{social_tables(request.app.state.social)}
 <h2>Feeds</h2><table><tr><th>Feed</th><th>Every</th><th>Next</th><th>Last</th><th>Why</th></tr>{feeds}</table>"""
     return HTMLResponse(page)
 
@@ -460,6 +463,37 @@ async def status(request: Request) -> Response:
 def span(seconds: float) -> str:
     minutes = round(seconds / 60)
     return f"{minutes} min" if minutes < 120 else f"{minutes / 60:.3g} h"
+
+
+def ago(stamp: str | None) -> str:
+    if not stamp:
+        return "never"
+    at = datetime.fromisoformat(stamp)
+    seconds = (datetime.now(timezone.utc) - at).total_seconds()
+    return f"{at.astimezone():%a %H:%M:%S} ({round(seconds)} s ago)" if seconds < 120 else f"{at.astimezone():%a %H:%M} ({span(seconds)} ago)"
+
+
+def social_tables(social) -> str:
+    """The Mastodon streams and the Bluesky hashtags: up or not, the last
+    event or poll, reconnects, the last error."""
+    if social is None:
+        return "<h2>Streams</h2><p>Not started.</p>"
+    view = social.view()
+    cell = lambda c: f"<td>{html.escape(str(c))}</td>"
+    streams = "".join(
+        f"<tr><th>{html.escape(s['source'])}</th>"
+        + "".join(cell(c) for c in (("connected" if s["connected"] else "down") + f" since {ago(s['since'])}",
+                                     ago(s["last_event"]), ago(s["last_heartbeat"]), s["reconnects"], s["last_error"]))
+        + "</tr>" for s in view["streams"])
+    tags = "".join(
+        f"<tr><th>#{html.escape(t['tag'])}</th>"
+        + "".join(cell(c) for c in (ago(t["last_poll"]), ago(t["last_success"]),
+                                     f"{span(t['backoff'])} ({t['errors']} failed)" if t["backoff"] else "", t["last_error"]))
+        + "</tr>" for t in view["bluesky"])
+    return (f"<h2>Mastodon streams</h2><table><tr><th>Stream</th><th>State</th><th>Last event</th><th>Last heartbeat</th>"
+            f"<th>Reconnects</th><th>Last error</th></tr>{streams}</table>"
+            f"<h2>Bluesky hashtags</h2><p>Polled every {BLUESKY_EVERY} s; {view['queued']} item(s) waiting for the social cycle.</p>"
+            f"<table><tr><th>Tag</th><th>Last poll</th><th>Last success</th><th>Backing off</th><th>Last error</th></tr>{tags}</table>")
 
 
 def feed_rows(conn) -> str:
@@ -596,3 +630,4 @@ app = Starlette(
     ],
 )
 app.state.rescore = set()  # readers whose feed needs re-scoring and re-publishing
+app.state.social = None  # social.Social, once the loop has started it

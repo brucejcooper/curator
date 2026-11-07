@@ -3,13 +3,14 @@
 import logging
 import os
 import subprocess
+import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 
 from curator import instagram, people, store
 from curator.collect import collect_all
 from curator.config import BACKUPS, DATA, DB
-from curator.judge import apply_shared_rules, judge_for, judge_local
+from curator.judge import apply_shared_rules, judge_for, judge_local, visible
 from curator.publish import publish
 from curator.stories import ingest
 from curator.traits import judge_traits
@@ -25,26 +26,24 @@ def profiles(conn) -> list:
     return [p for u in people.readers(conn) if (p := people.profile(conn, u))]
 
 
-def cycle() -> dict:
+# Processing (ingest → judge → publish) runs one at a time: the 15-minute
+# cycle's, the social cycle's, the daily jobs and re-scoring. Collection
+# isn't held by it, so the social cycle never waits behind slow RSS fetches.
+PROCESSING = threading.RLock()
+
+
+def cycle(live=None) -> dict:
     """Collect once for everyone; judge what's new (shared questions once,
-    each reader's own for them); publish each reader's feed."""
+    each reader's own for them); publish each reader's feed. `live`
+    (social.Social): the sources that arrive in real time, not polled here."""
     started = time.monotonic()
     conn = store.connect()
     try:
         everyone = profiles(conn)
         feeds: dict = {}
-        found = collect_all(conn, everyone, feeds)
-        new = ingest(conn, found)
-        if new:
-            apply_shared_rules(conn, new)
-            judge_traits(conn, new)
-        # Items seen anew in someone's source (new, or new to them) need judging for them.
-        fresh = sorted({it_id for it_id in new} | recently_sighted(conn, started))
-        published = {}
-        for p in everyone:
-            if fresh:
-                judge_for(conn, p, fresh)
-            published[p.user] = publish(conn, p)
+        found = collect_all(conn, everyone, feeds, live)
+        with PROCESSING:
+            new, published = process(conn, everyone, found)
         result = {
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "found": len(found), "new": len(new), **feeds, "published": published,
@@ -58,9 +57,51 @@ def cycle() -> dict:
         conn.close()
 
 
+def social_cycle(found: list[dict]) -> dict:
+    """What the Mastodon streams and the Bluesky poller brought: judged as in
+    the cycle, and published for only the readers it reaches."""
+    started = time.monotonic()
+    conn = store.connect()
+    try:
+        with PROCESSING:
+            new, published = process(conn, profiles(conn), found, affected_only=True)
+        result = {
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "found": len(found), "new": len(new), "published": published,
+            "seconds": round(time.monotonic() - started, 1),
+        }
+        store.put(conn, "last_social_cycle", result)
+        conn.commit()
+        log.info("social cycle %s", result)
+        return result
+    finally:
+        conn.close()
+
+
+def process(conn, everyone: list, found: list[dict], affected_only: bool = False) -> tuple[list[str], dict]:
+    """Ingest what was found, judge what's new, publish. Every reader's feed
+    is published, or with `affected_only` only those of readers who follow
+    a source something was seen in. Hold PROCESSING."""
+    started = time.monotonic()
+    new = ingest(conn, found)
+    if new:
+        apply_shared_rules(conn, new)
+        judge_traits(conn, new)
+    # Items seen anew in someone's source (new, or new to them) need judging for them.
+    fresh = sorted({it_id for it_id in new} | recently_sighted(conn, started))
+    published = {}
+    for p in everyone:
+        if affected_only and not visible(conn, p.sources["keys"], fresh):
+            continue
+        if fresh:
+            judge_for(conn, p, fresh)
+        published[p.user] = publish(conn, p)
+    return new, published
+
+
 def recently_sighted(conn, since_monotonic: float) -> set[str]:
-    """Items sighted during this cycle (an existing item can turn up in a new
-    reader's source)."""
+    """Items sighted since `since_monotonic` (an existing item can turn up in
+    a new reader's source)."""
     started = datetime.now(timezone.utc) - timedelta(seconds=time.monotonic() - since_monotonic + 5)
     return {r[0] for r in conn.execute("SELECT DISTINCT item_id FROM sightings WHERE seen >= ?",
                                        (started.isoformat(timespec="seconds"),))}
@@ -71,8 +112,9 @@ def rescore(conn, user: str) -> None:
     re-publish their feed."""
     p = people.profile(conn, user)
     if p:
-        judge_local(conn, p)
-        publish(conn, p)
+        with PROCESSING:
+            judge_local(conn, p)
+            publish(conn, p)
 
 
 # ── Daily ────────────────────────────────────────────────────────────────────
@@ -155,25 +197,26 @@ def daily() -> None:
 
     conn = store.connect()
     try:
-        scouting = date.today().weekday() == SCOUT_WEEKDAY
-        for user in people.readers(conn):
+        with PROCESSING:
+            scouting = date.today().weekday() == SCOUT_WEEKDAY
+            for user in people.readers(conn):
+                try:
+                    log.info("profile %s: %s", user, refresh(conn, user))
+                except Exception:
+                    log.exception("profile refresh for %s", user)
+                rescore(conn, user)
+                try:
+                    review_trials(conn, user)
+                    if scouting:
+                        scout(conn, user)
+                except Exception:
+                    log.exception("scout for %s", user)
+            purge(conn)
+            backup(conn)
             try:
-                log.info("profile %s: %s", user, refresh(conn, user))
+                export_profiles(conn)
             except Exception:
-                log.exception("profile refresh for %s", user)
-            rescore(conn, user)
-            try:
-                review_trials(conn, user)
-                if scouting:
-                    scout(conn, user)
-            except Exception:
-                log.exception("scout for %s", user)
-        purge(conn)
-        backup(conn)
-        try:
-            export_profiles(conn)
-        except Exception:
-            log.exception("profile export")
+                log.exception("profile export")
     finally:
         conn.close()
 

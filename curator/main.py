@@ -1,5 +1,5 @@
-"""The curator service: the web server, the 15-minute fast loop, and the daily
-slow loop, in one process."""
+"""The curator service: the web server, the 15-minute fast loop, the social
+streams and their cycle (social.py), and the daily slow loop, in one process."""
 
 import asyncio
 import logging
@@ -12,6 +12,7 @@ import uvicorn
 from curator import pipeline, store
 from curator.config import CYCLE
 from curator.server import app
+from curator.social import Social
 
 log = logging.getLogger("curator")
 DAILY_AT = os.environ.get("CURATOR_DAILY_AT", "04:30")  # local time (TZ)
@@ -29,16 +30,17 @@ def rescore(users: set[str]) -> None:
     also needs their own questions asked about what's in the window."""
     conn = store.connect()
     try:
-        for user in users:
-            p = pipeline.people.profile(conn, user)
-            if p:
-                from curator.judge import judge_jev
-                from curator.stories import WINDOW
+        with pipeline.PROCESSING:
+            for user in users:
+                p = pipeline.people.profile(conn, user)
+                if p:
+                    from curator.judge import judge_jev
+                    from curator.stories import WINDOW
 
-                cutoff = (datetime.now(ZoneInfo("UTC")) - WINDOW).isoformat(timespec="seconds")
-                recent = [r[0] for r in conn.execute("SELECT id FROM items WHERE rule IS NULL AND fetched >= ?", (cutoff,))]
-                judge_jev(conn, p, recent)  # only asks about items not yet judged for them
-                pipeline.rescore(conn, user)
+                    cutoff = (datetime.now(ZoneInfo("UTC")) - WINDOW).isoformat(timespec="seconds")
+                    recent = [r[0] for r in conn.execute("SELECT id FROM items WHERE rule IS NULL AND fetched >= ?", (cutoff,))]
+                    judge_jev(conn, p, recent)  # only asks about items not yet judged for them
+                    pipeline.rescore(conn, user)
     finally:
         conn.close()
 
@@ -46,6 +48,8 @@ def rescore(users: set[str]) -> None:
 async def loop() -> None:
     tz = ZoneInfo(os.environ.get("TZ", "UTC"))
     await asyncio.to_thread(pipeline.startup)
+    social = app.state.social = Social()
+    social.start()
     daily_at = next_daily(datetime.now(tz))
     next_cycle = datetime.now(tz)
     while True:
@@ -56,7 +60,8 @@ async def loop() -> None:
                 await asyncio.to_thread(pipeline.daily)
             if now >= next_cycle:
                 next_cycle = now + CYCLE
-                await asyncio.to_thread(pipeline.cycle)
+                await social.reconcile()  # picks up sources followed or dropped
+                await asyncio.to_thread(pipeline.cycle, social)
             elif app.state.rescore:
                 users, app.state.rescore = set(app.state.rescore), set()
                 await asyncio.to_thread(rescore, users)

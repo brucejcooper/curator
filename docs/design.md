@@ -8,9 +8,14 @@ picks what each reader would want, learning from what they actually read.
 
 **The fast loop** runs every 15 minutes:
 
-1. **Collect** from every reader's sources at once: RSS/Atom feeds, Mastodon
-   and Bluesky hashtags (each fetched once, however many readers follow it),
-   and each connected reader's own Mastodon home timeline. A reply stands for
+1. **Collect** from every reader's sources at once (each fetched once,
+   however many readers follow it): RSS/Atom feeds, Instagram, and the
+   Mastodon and Bluesky people readers follow. Mastodon and Bluesky
+   hashtags and each connected reader's own Mastodon home timeline arrive
+   in real time instead (see *Social, in real time* below); the loop polls a
+   Mastodon timeline only while its stream has been down for more than
+   5 minutes, so a broken stream is no worse than polling.
+   A reply stands for
    its conversation: the conversation's first post is what gets judged.
    A quote post carries the text of the post it quotes.
    Each feed is fetched only when it's due, as often as it changes: about
@@ -48,6 +53,33 @@ picks what each reader would want, learning from what they actually read.
 4. **Publish** each reader's feed: the deciding classifier's stories that
    clear their bar, up to a daily ceiling (a slow day gives a short feed,
    not filler), plus a "maybe" lane.
+
+**Social, in real time.** New Mastodon and Bluesky posts reach the feed
+within a minute or two, over outbound connections only:
+
+- Each followed Mastodon hashtag is a stream (Server-Sent Events from the
+  server's streaming API, found in `/api/v2/instance`), read with the
+  owner's token; each connected reader's home timeline is their `user`
+  stream, with their own. Only new posts (`update`) are taken. On every
+  (re)connect the timeline is first polled since its cursor (`since_id`),
+  so a disconnect leaves no gap. Reconnects back off from 2 s, doubling to
+  5 minutes, with jitter; 90 s without a heartbeat counts as a disconnect.
+- Bluesky's hashtags are polled (`searchPosts`, latest first) every 90 s,
+  each on its own: a failing tag backs off, doubling up to 15 minutes,
+  and the others carry on. Its firehose (Jetstream) would cost about
+  1.35 GB a day, even compressed, to keep a few hundred posts an hour;
+  polling costs about 190 MB for about a minute's delay.
+- What arrives is queued. 45 s after the first item, the **social cycle**
+  takes the queue through the same steps 2 to 4 as the fast loop, and
+  publishes only the readers who follow a source it was seen in. An empty
+  queue costs nothing.
+- Collection runs alongside; processing (ingest to publish, the daily jobs,
+  re-scoring) runs one at a time, so the social cycle waits at most for the
+  fast loop's few seconds of judging, never for its slow feeds.
+- Sources followed or dropped, and readers connecting Mastodon, are picked
+  up at the next fast loop. `/status` shows each stream (connected since,
+  last event and heartbeat, reconnects, last error), each Bluesky tag
+  (last poll and success, backoff, last error) and the last social cycle.
 
 **The slow loop** runs once a day: Claude revises each reader's profile from
 their recent behaviour, saving a new version; each reader's local model is

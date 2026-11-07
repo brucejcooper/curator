@@ -1,7 +1,8 @@
 """Collect candidate items for every reader at once: the RSS/Atom feeds,
 Mastodon and Bluesky hashtags and people, and Instagram people in anyone's
 sources (each fetched once), and each connected reader's own Mastodon home
-timeline."""
+timeline. The hashtags and home timelines also arrive in real time
+(social.py), which shares the Mastodon and Bluesky code here."""
 
 import logging
 import math
@@ -345,8 +346,8 @@ def from_status(s: dict, source: str, home: bool = False) -> dict | None:
     return {**it, "quote": quote, "poster": poster}
 
 
-def mastodon_client(server: str, token: str) -> httpx.Client:
-    return httpx.Client(base_url=f"https://{server}", headers={**UA, "Authorization": f"Bearer {token}"}, timeout=30)
+def mastodon_client(server: str, token: str, timeout: float = 30) -> httpx.Client:
+    return httpx.Client(base_url=f"https://{server}", headers={**UA, "Authorization": f"Bearer {token}"}, timeout=timeout)
 
 
 def conversation_root(http: httpx.Client, status_id: str, cache: dict) -> dict | None:
@@ -358,19 +359,32 @@ def conversation_root(http: httpx.Client, status_id: str, cache: dict) -> dict |
     return cache[status_id]
 
 
-def mastodon(conn, http: httpx.Client, path: str, source: str, roots: dict, home_map: list | None = None) -> list[dict]:
-    """A timeline's new posts. For a home timeline, `home_map` collects
-    (status id, item id) so the reader app's questions about those posts are
-    answered without another fetch."""
+STATUS_ID = re.compile(r"\d{1,20}")  # Mastodon's ids: snowflakes, as strings
+
+
+def status_id(value) -> str | None:
+    """A status id from server input, or None for anything that isn't one."""
+    return value if isinstance(value, str) and STATUS_ID.fullmatch(value) else None
+
+
+def advance(conn, source: str, sid) -> None:
+    """Move a timeline's since_id cursor forward to `sid` (never back: a
+    stream event and a gap-filling poll can arrive in either order)."""
+    if not (sid := status_id(sid)):
+        return
     key = f"since:{source}"  # per source, so per reader for home timelines
-    since = store.get(conn, key)
-    params = {"limit": 40, **({"since_id": since} if since else {})}
-    resp = http.get(path, params=params)
-    resp.raise_for_status()
-    statuses = resp.json()
-    if statuses:
-        store.put(conn, key, statuses[0]["id"])
+    since = status_id(store.get(conn, key))
+    if since is None or (len(sid), sid) > (len(since), since):
+        store.put(conn, key, sid)
         conn.commit()  # don't hold the write lock across the next fetch
+
+
+def statuses_items(http: httpx.Client, statuses: list[dict], source: str, roots: dict,
+                   home_map: list | None = None) -> list[dict]:
+    """Items from statuses, however they came (a timeline poll or a stream).
+    For a home timeline, `home_map` collects (status id, item id) so the
+    reader app's questions about those posts are answered without another
+    fetch."""
     items = []
     home = home_map is not None
     for status in statuses:
@@ -384,6 +398,26 @@ def mastodon(conn, http: httpx.Client, path: str, source: str, roots: dict, home
             if home:
                 home_map.append((status["id"], item_id(it["url"])))
     return items
+
+
+def record_home(conn, user: str, home_map: list) -> None:
+    stamp = iso(now())
+    conn.executemany("INSERT OR IGNORE INTO home_posts VALUES (?, ?, ?, ?)", [(user, sid, iid, stamp) for sid, iid in home_map])
+    conn.commit()
+
+
+def mastodon(conn, http: httpx.Client, path: str, source: str, roots: dict, home_map: list | None = None) -> list[dict]:
+    """A timeline's new posts since its cursor (see statuses_items)."""
+    since = status_id(store.get(conn, f"since:{source}"))
+    params = {"limit": 40, **({"since_id": since} if since else {})}
+    resp = http.get(path, params=params)
+    resp.raise_for_status()
+    statuses = resp.json()
+    if not isinstance(statuses, list):
+        raise ValueError(f"{path}: not a list of statuses")
+    if statuses:
+        advance(conn, source, statuses[0].get("id"))
+    return statuses_items(http, statuses, source, roots, home_map)
 
 
 def mastodon_account_id(conn, http: httpx.Client, acct: str) -> str | None:
@@ -458,13 +492,42 @@ def bluesky_posts(http: httpx.Client, uris: list[str]) -> dict[str, dict]:
     return found
 
 
+FUTURE_SLACK = timedelta(minutes=10)  # clocks differ; later than this, a post's date is made up
+
+
+def bsky_time(value) -> datetime | None:
+    """A post's createdAt, which its author's app sets: None if it isn't a
+    date or is in the future (one such post would hold the tag's cursor
+    there, and nothing newer would be seen until then)."""
+    if not isinstance(value, str) or len(value) > 40:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    dt = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dt if dt <= now() + FUTURE_SLACK else None
+
+
+def bsky_since(conn, key: str, posts: list[dict]) -> list[dict]:
+    """The posts newer than the source's cursor, with a sane date; moves
+    the cursor to the newest."""
+    last = bsky_time(store.get(conn, key, ""))
+    dated = [(d, p) for p in posts if isinstance(p, dict) and (d := bsky_time((p.get("record") or {}).get("createdAt")))]
+    dated = [(d, p) for d, p in dated if last is None or d > last]
+    if dated:
+        store.put(conn, key, max(dated, key=lambda dp: dp[0])[1]["record"]["createdAt"])
+        conn.commit()  # don't hold the write lock across the next fetch
+    return [p for _, p in dated]
+
+
 def bluesky(conn, http: httpx.Client, tag: str) -> list[dict]:
-    key = f"bluesky:{tag}"
-    last = store.get(conn, key, "")
     resp = http.get("https://api.bsky.app/xrpc/app.bsky.feed.searchPosts",
                     params={"q": f"#{tag}", "sort": "latest", "limit": 50})
     resp.raise_for_status()
-    posts = [p for p in resp.json().get("posts", []) if p.get("record", {}).get("createdAt", "") > last]
+    if not isinstance(found := resp.json(), dict):
+        raise ValueError("searchPosts: not an object")
+    posts = bsky_since(conn, f"bluesky:{tag}", found.get("posts") or [])
     # Text replies stand for their thread's first post (see the Mastodon note).
     is_reply = lambda p: p.get("record", {}).get("reply") and not ((p.get("embed") or {}).get("external") or {}).get("uri")
     roots = bluesky_posts(http, sorted({p["record"]["reply"]["root"]["uri"] for p in posts if is_reply(p)}))
@@ -472,13 +535,11 @@ def bluesky(conn, http: httpx.Client, tag: str) -> list[dict]:
     for p in posts:
         if is_reply(p):
             p = roots.get(p["record"]["reply"]["root"]["uri"])
-            if p is None or now() - datetime.fromisoformat(p["record"]["createdAt"].replace("Z", "+00:00")) > MAX_ROOT_AGE:
+            created = bsky_time(((p or {}).get("record") or {}).get("createdAt"))
+            if created is None or now() - created > MAX_ROOT_AGE:
                 continue
         if it := from_bsky(p, f"bluesky:#{tag}"):
             items.append(it)
-    if posts:
-        store.put(conn, key, max(p["record"]["createdAt"] for p in posts))
-        conn.commit()  # don't hold the write lock across the next fetch
     return items
 
 
@@ -504,22 +565,22 @@ def shared_sources(profiles: list) -> dict:
 def bluesky_person(conn, http: httpx.Client, handle: str) -> list[dict]:
     """A person's own Bluesky posts (not their replies)."""
     key = f"bluesky:@{handle}"
-    last = store.get(conn, key, "")
     resp = http.get("https://api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed",
                     params={"actor": handle, "limit": 50, "filter": "posts_no_replies"})
     resp.raise_for_status()
     posts = [f["post"] for f in resp.json().get("feed", []) if not f.get("reason")]  # skip reposts
-    posts = [p for p in posts if p.get("record", {}).get("createdAt", "") > last]
-    if posts:
-        store.put(conn, key, max(p["record"]["createdAt"] for p in posts))
-        conn.commit()  # don't hold the write lock across the next fetch
+    posts = bsky_since(conn, key, posts)
     return [it for p in posts if (it := from_bsky(p, f"bluesky:@{handle}"))]
 
 
-def collect_all(conn, profiles: list, tally: dict | None = None) -> list[dict]:
+def collect_all(conn, profiles: list, tally: dict | None = None, live=None) -> list[dict]:
     """New items from everyone's sources, and each connected reader's home
-    timeline. `tally` collects how many feeds were fetched, and skipped (not due)."""
+    timeline. `tally` collects how many feeds were fetched, and skipped (not due).
+    `live` (social.Social) says which sources arrive in real time and so
+    aren't polled here: a Mastodon stream that's up (or only just down), a
+    Bluesky tag the poller has. Without it, everything is polled."""
     sources = shared_sources(profiles)
+    polled = (lambda source: True) if live is None else (lambda source: not live.covers(source))
     found: list[dict] = []
     started = now()
     feeds = [f for f in sources["rss"] if due(store.get(conn, f"rss:{f['url']}", {}), started)]
@@ -531,7 +592,8 @@ def collect_all(conn, profiles: list, tally: dict | None = None) -> list[dict]:
             # Seen under each reader's name for this feed.
             return items + [{**it, "source": f"rss:{name}"} for name in sorted(f["names"] - {f["name"]}) for it in items]
         jobs = [(f"rss {f['name']}", lambda f=f: feed_job(f)) for f in feeds]
-        jobs += [(f"bluesky #{t}", lambda t=t: bluesky(conn, http, t)) for t in sorted(sources["bluesky_tags"])]
+        jobs += [(f"bluesky #{t}", lambda t=t: bluesky(conn, http, t)) for t in sorted(sources["bluesky_tags"])
+                 if polled(f"bluesky:#{t}")]
         jobs += [(f"bluesky @{h}", lambda h=h: bluesky_person(conn, http, h)) for h in sorted(sources["bluesky_people"])]
         for name, job in jobs:
             try:
@@ -541,10 +603,13 @@ def collect_all(conn, profiles: list, tally: dict | None = None) -> list[dict]:
     found += instagram.collect(conn, sources["instagram_people"])
     # Hashtags and people, read with the owner's account.
     owner = people.mastodon(conn, OWNER)
-    if owner and (sources["mastodon_tags"] or sources["mastodon_accounts"]):
+    tags = [t for t in sorted(sources["mastodon_tags"]) if polled(f"mastodon:#{t}")]
+    if owner and (tags or sources["mastodon_accounts"]):
         with mastodon_client(owner[0], owner[1]) as http:
             roots: dict = {}
-            for t in sorted(sources["mastodon_tags"]):
+            for t in tags:
+                if live is not None:
+                    log.info("mastodon #%s: no stream up, polled instead", t)
                 try:
                     found += mastodon(conn, http, f"/api/v1/timelines/tag/{t}", f"mastodon:#{t}", roots)
                 except (httpx.HTTPError, ValueError) as e:
@@ -555,17 +620,19 @@ def collect_all(conn, profiles: list, tally: dict | None = None) -> list[dict]:
                 except (httpx.HTTPError, ValueError, KeyError) as e:
                     log.warning("mastodon @%s: %s", a, e)
     # Each connected reader's own home timeline.
-    stamp = iso(now())
     for p in profiles:
         creds = people.mastodon(conn, p.user)
-        if not creds or not p.sources["mastodon_home"]:
+        source = people.home_source(p.user)
+        if not creds or not p.sources["mastodon_home"] or not polled(source):
             continue
+        if live is not None:
+            log.info("home timeline for %s: no stream up, polled instead", p.user)
         home_map: list = []
         with mastodon_client(creds[0], creds[1]) as http:
             try:
-                found += mastodon(conn, http, "/api/v1/timelines/home", people.home_source(p.user), {}, home_map)
+                found += mastodon(conn, http, "/api/v1/timelines/home", source, {}, home_map)
             except (httpx.HTTPError, ValueError) as e:
                 log.warning("home timeline for %s: %s", p.user, e)
-        conn.executemany("INSERT OR IGNORE INTO home_posts VALUES (?, ?, ?, ?)", [(p.user, sid, iid, stamp) for sid, iid in home_map])
+        record_home(conn, p.user, home_map)
     conn.commit()
     return found
