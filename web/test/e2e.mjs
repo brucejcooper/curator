@@ -61,6 +61,12 @@ const state = {
   refreshes: 0,
   tokenLife: 600,
   failTimeline: false,
+  // A connection that has died: the next `timelineStalls` timeline requests
+  // (and every vote while `voteStalls`) get no answer for `stallMs`.
+  timelineStalls: 0,
+  voteStalls: false,
+  voteCalls: 0,
+  stallMs: 4000,
   onboarded: true,
   mastodon: 'mastodon.au',
   onboardingAnswers: null,
@@ -183,8 +189,16 @@ async function fakes(ctx) {
     }
     if (url.pathname === '/api/admin/users') return json(route, { users: [{ user: 'alex', name: 'Alex', admin: true, profile_version: 2, votes: 3, mastodon: 'mastodon.au', agent: false }] });
     if (url.pathname === '/api/settings') return json(route, { decider: body.decider });
+    const stall = async () => {
+      await new Promise((r) => setTimeout(r, state.stallMs));
+      return route.fulfill({ status: 504 }).catch(() => {}); // the app has given up by now
+    };
     if (url.pathname === '/api/timeline') {
       if (state.failTimeline) return json(route, { error: 'boom' }, 503);
+      if (state.timelineStalls > 0) {
+        state.timelineStalls--;
+        return stall();
+      }
       state.timelineCalls = (state.timelineCalls || 0) + 1;
       const limit = Number(q.get('limit'));
       return json(route, q.get('before') ? timelineBefore(q.get('before'), limit) : timelineAfter(q.get('after'), limit));
@@ -196,6 +210,8 @@ async function fakes(ctx) {
       return json(route, { position: state.position });
     }
     if (url.pathname === '/api/vote') {
+      state.voteCalls++;
+      if (state.voteStalls) return stall();
       state.votes[voteKey(body)] = body.vote;
       state.lastVote = body;
       return json(route, { ok: true });
@@ -885,6 +901,108 @@ await ctx.close();
   state.tokenDown = false;
   await rp.waitForSelector('#timeline article', { timeout: 8000 });
   await rc.close();
+}
+
+// ---------------------------------------------------------------- a dead connection
+// A request that gets no answer (a kept-alive connection that died while the
+// phone slept) is given up on after a timeout, shortened here to 1 s. A read
+// is sent again once; if that fails too, the app says it couldn't reach the
+// server and offers Retry, instead of a spinner that never ends. A write is
+// never sent twice.
+{
+  state.statuses = Array.from({ length: 10 }, (_, n) => status(1000 + n));
+  state.articles = [];
+  state.position = '1005';
+  const stale = { ...signedIn(), expires: Date.now() - 1000 }; // the night's expired token
+  const dc = await newContext();
+  await dc.addInitScript(([s]) => {
+    window.__readerTimeoutMs = 1000;
+    if (sessionStorage.getItem('seeded')) return;
+    sessionStorage.setItem('seeded', '1');
+    localStorage.setItem('reader.session', JSON.stringify(s));
+  }, [stale]);
+  const dp = await dc.newPage();
+  dp.on('pageerror', (e) => console.error('pageerror', e));
+  await dp.goto(APP);
+  await dp.waitForSelector('#end.caught-up');
+  const spinning = () => dp.evaluate(() => !!document.querySelector('#end-status .spinner'));
+  const report = async () => {
+    await dp.click('#menu');
+    await dp.click('#copy-diagnostics');
+    const text = await dp.evaluate(() => navigator.clipboard.readText());
+    await dp.click('#settings-close');
+    return text;
+  };
+
+  // One stalled request: the check goes through on the retry.
+  state.statuses.push(status(1100));
+  state.timelineStalls = 1;
+  let t0 = Date.now();
+  await dp.click('#check-new');
+  await dp.waitForSelector('#timeline article[data-id="1100"]', { timeout: 5000 });
+  let took = Date.now() - t0;
+  assert.ok(took < 2500, `a stalled check is retried after the timeout (took ${took} ms)`);
+  await dp.waitForFunction(() => !document.querySelector('#end-status .spinner'), null, { timeout: 2000 });
+  assert.equal(await dp.isVisible('#retry'), false);
+  let log = await report();
+  assert.match(log, / api method=GET path=\/api\/timeline retry=timeout status=200 ms=1\d\d\d tokenMs=\d+$/m, 'the timeout and the retry are logged');
+  assert.match(log, / token-refresh ms=\d+ lockMs=\d+ force=false outcome=ok$/m, 'the token refresh is logged');
+  assert.match(log, / api method=GET path=\/api\/me status=200 ms=\d+ tokenMs=\d+$/m, 'every call, with the time spent on the token');
+  assert.ok(!/acc\d|ref\d|after=1/.test(log.split('Log (')[1].replace(/ after=\d+/g, '')), 'no tokens or query strings');
+
+  // Stalled every time: "couldn't reach the server" within two timeouts, and Retry works once it's back.
+  state.statuses.push(status(1102));
+  state.timelineStalls = Infinity;
+  t0 = Date.now();
+  await dp.click('#check-new');
+  await dp.waitForSelector('#retry:not([hidden])', { timeout: 5000 });
+  took = Date.now() - t0;
+  assert.ok(took < 3000, `gives up after the retry (took ${took} ms)`);
+  assert.match(await dp.textContent('#end-status'), /Couldn't reach the server/);
+  assert.equal(await spinning(), false, 'no spinner left up');
+  assert.match(await report(), / api method=GET path=\/api\/timeline retry=timeout status=timeout ms=\d+ tokenMs=\d+$/m);
+  state.timelineStalls = 0;
+  await dp.click('#retry');
+  await dp.waitForSelector('#timeline article[data-id="1102"]');
+  await dp.waitForSelector('#retry', { state: 'hidden' });
+
+  // A vote that gets no answer is sent once, and says so.
+  state.voteStalls = true;
+  const votesBefore = state.voteCalls;
+  let alerted = null;
+  dp.once('dialog', (d) => {
+    alerted = d.message();
+    d.dismiss();
+  });
+  await dp.click('article[data-id="1102"] button[aria-label="More like this"]');
+  await dp.waitForFunction(() => !document.querySelector('article[data-id="1102"] button.vote:disabled'), null, { timeout: 5000 });
+  await dp.waitForTimeout(500);
+  assert.equal(state.voteCalls, votesBefore + 1, 'a write is never sent twice');
+  assert.match(alerted || '', /Couldn't reach the server/);
+  assert.equal(await dp.getAttribute('article[data-id="1102"] button[aria-label="More like this"]', 'aria-pressed'), 'false');
+  state.voteStalls = false;
+
+  // Across loads: a start on a dead connection shows Retry, not an endless
+  // "Loading…", and the log of what happened survives the reload.
+  state.timelineStalls = Infinity;
+  t0 = Date.now();
+  await dp.reload();
+  await dp.waitForSelector('#retry:not([hidden])', { timeout: 8000 });
+  took = Date.now() - t0;
+  assert.ok(took < 6000, `a start on a dead connection gives up (took ${took} ms)`);
+  assert.match(await dp.textContent('#end-status'), /Couldn't reach the server/);
+  assert.equal(await spinning(), false);
+  state.timelineStalls = 0;
+  await dp.click('#retry');
+  await dp.waitForSelector('#timeline article:not(.read)');
+  log = await report();
+  assert.match(log, / api method=GET path=\/api\/timeline retry=timeout status=200 /, 'the log from before the reload is kept');
+  // And a start where only the first request stalls just works.
+  state.timelineStalls = 1;
+  await dp.reload();
+  await dp.waitForSelector('#end.caught-up', { timeout: 5000 });
+  assert.equal(await dp.isVisible('#retry'), false);
+  await dc.close();
 }
 
 await browser.close();

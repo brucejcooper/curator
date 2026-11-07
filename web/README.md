@@ -38,6 +38,12 @@ the curator's `/api/` (see `../README.md`).
   then for the rest of that start), refreshing the cache in the background.
   Each start's timings (the page, each file, the server's `Server-Timing`,
   what the service worker did) go in the diagnostics log; see `js/app.js`.
+- **Dead connections**: every request has a timeout (10 s for reads, 20 s
+  for writes and the token refresh). A read, or the position, is sent again
+  once; other writes and the refresh token never are. A check that still
+  fails says "Couldn't reach the server" with Retry. Each API call's time
+  (and the part spent on the token) goes in the diagnostics log; see
+  `js/api.js`.
 
 Reading behaviour (what counts as read, the iOS scroll quirks, the faded
 history above your position, "Open links in Safari", diagnostics) is

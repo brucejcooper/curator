@@ -4,11 +4,61 @@
 // the access token. The
 // refresh token rotates on every use, so refreshing is single-flight: two
 // refreshes racing would spend the same token twice and end the session.
+//
+// No request waits indefinitely: a phone that slept can come back to a
+// kept-alive connection that has silently died, and a fetch on it hangs
+// until the OS gives up, minutes later. Every fetch here has a timeout; a
+// read (and the position, which the server never moves back) is sent again
+// once if it times out or fails on the way. Other writes are not: they
+// might have reached the server, and a failed vote is easy to repeat. Nor
+// is the refresh token: one that reached authentik is spent, whether or not
+// its answer got back.
 
 const SCOPE = 'openid profile offline_access';
 const SESSION_KEY = 'reader.session';
 const PENDING_KEY = 'reader.pending-login';
 const SKEW_S = 30; // refresh this long before the access token expires
+const READ_TIMEOUT_MS = 10_000; // reads, sign-in discovery, config.json
+// Writes and the token refresh get longer: giving up on one that is merely
+// slow can lose its effect (or spend the refresh token) for nothing.
+const WRITE_TIMEOUT_MS = 20_000;
+const SLOW_MS = 1000; // an API call slower than this is always logged
+
+// `window.__readerTimeoutMs` shortens every timeout (for the tests).
+const timeoutMs = (write) => globalThis.__readerTimeoutMs ?? (write ? WRITE_TIMEOUT_MS : READ_TIMEOUT_MS);
+
+// Where api.js reports what it did (the app's diagnostics log); nothing until set.
+let logger = () => {};
+export function setLogger(fn) {
+  logger = fn;
+}
+
+const timeoutError = (ms) => Object.assign(new Error(`Couldn't reach the server (no answer in ${Math.round(ms / 100) / 10} s)`), { timeout: true });
+
+// fetch(), given up on after `ms`, reading the answer with `read(res)` inside
+// the same time limit (a dead connection can stall the body too). A timeout
+// throws an error with `timeout: true`; a failure on the way, `network: true`.
+export async function timedFetch(url, opts, ms, read) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
+  try {
+    let res;
+    try {
+      res = await fetch(url, { ...opts, signal: ctl.signal });
+    } catch (err) {
+      throw ctl.signal.aborted ? timeoutError(ms) : Object.assign(err, { network: true });
+    }
+    try {
+      return await read(res);
+    } catch (err) {
+      if (ctl.signal.aborted) throw timeoutError(ms);
+      if (err instanceof TypeError) err.network = true;
+      throw err;
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export const redirectUri = () => `${location.origin}/`;
 
@@ -26,7 +76,7 @@ async function pkceChallenge(verifier) {
 // { authority, client_id, sign_in } from the server.
 let config = null;
 export async function clientConfig() {
-  config ??= fetch('config.json', { cache: 'no-store' }).then((r) => r.json()).catch((err) => {
+  config ??= timedFetch('config.json', { cache: 'no-store' }, timeoutMs(false), (r) => r.json()).catch((err) => {
     config = null;
     throw err;
   });
@@ -35,10 +85,10 @@ export async function clientConfig() {
 
 let discovery = null;
 async function endpoints() {
-  discovery ??= clientConfig().then((c) => fetch(`${c.authority.replace(/\/?$/, '/')}.well-known/openid-configuration`)).then((r) => {
+  discovery ??= clientConfig().then((c) => timedFetch(`${c.authority.replace(/\/?$/, '/')}.well-known/openid-configuration`, {}, timeoutMs(false), (r) => {
     if (!r.ok) throw new Error(`Sign-in service unavailable (${r.status})`);
     return r.json();
-  }).catch((err) => {
+  })).catch((err) => {
     discovery = null;
     throw err;
   });
@@ -89,13 +139,15 @@ function keep(tokens) {
 
 async function tokenRequest(form) {
   const { token_endpoint } = await endpoints();
-  const res = await fetch(token_endpoint, {
+  const client_id = (await clientConfig()).client_id;
+  return timedFetch(token_endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ client_id: (await clientConfig()).client_id, ...form }),
+    body: new URLSearchParams({ client_id, ...form }),
+  }, timeoutMs(true), (res) => {
+    if (!res.ok) throw Object.assign(new Error(`Sign-in failed (${res.status})`), { status: res.status });
+    return res.json();
   });
-  if (!res.ok) throw Object.assign(new Error(`Sign-in failed (${res.status})`), { status: res.status });
-  return res.json();
 }
 
 // Finishes the sign-in after authentik redirects back with ?code=…&state=….
@@ -112,16 +164,23 @@ let refreshing = null;
 // Trades the refresh token for new tokens. Tabs share one session, so the
 // trade is done under a lock across tabs, and re-reads the session inside it:
 // if another tab has just done it, its tokens are used, not the spent one.
+// A timeout counts as a blip: it is not tried again here (the next request
+// does), since the token may have been spent on the way.
 async function refreshSession(force) {
+  const t0 = performance.now();
   const run = async () => {
     const s = load(SESSION_KEY);
     if (!s) return null;
     if (!force && s.access && s.expires - SKEW_S * 1000 > Date.now()) return s.access;
+    const lockMs = Math.round(performance.now() - t0);
+    const done = (outcome) => logger('token-refresh', { ms: Math.round(performance.now() - t0), lockMs, force, outcome });
     try {
       const t = await tokenRequest({ grant_type: 'refresh_token', refresh_token: s.refresh });
       keep({ ...t, refresh_token: t.refresh_token || s.refresh });
+      done('ok');
       return t.access_token;
     } catch (err) {
+      done(err.timeout ? 'timeout' : err.network ? 'network' : err.status ?? err.message);
       // A dead refresh token means signing in again, unless it was replaced
       // meanwhile; a network blip doesn't.
       const now = load(SESSION_KEY);
@@ -154,26 +213,68 @@ export function signOut() {
 
 export class Api {
   // `keepalive` lets a request finish while the page is being hidden.
-  async request(path, { method = 'GET', body, keepalive = false, retry = true } = {}) {
-    const token = await accessToken().catch(() => null);
-    if (!token) throw Object.assign(new Error('Please sign in'), { unauthorised: true });
-    const res = await fetch(path, {
-      method,
-      keepalive,
-      headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-      body: body ? JSON.stringify(body) : undefined,
-      cache: 'no-store',
-    });
-    if (res.status === 401 && retry) {
-      await accessToken({ force: true }).catch(() => null);
-      return this.request(path, { method, body, keepalive, retry: false });
+  // `idempotent` requests are sent again once after a timeout or a network
+  // failure (see the top of this file). Each call goes in the diagnostics
+  // log with its time from here, and the part of it spent getting a token
+  // (tokenMs); `quiet` ones (frequent, with a log line of their own) only
+  // when slow or failed. No tokens, bodies or query strings.
+  async request(path, { method = 'GET', body, keepalive = false, idempotent = method === 'GET', quiet = false } = {}) {
+    const t0 = performance.now();
+    const entry = { method, path: path.split('?')[0] };
+    let tokenMs = 0;
+    // Only a session that is gone means signing in again; a refresh that
+    // timed out or failed on the way is that error, and the next call tries again.
+    const token = async (force) => {
+      const t = performance.now();
+      let access = null;
+      try {
+        access = await accessToken({ force });
+      } catch (err) {
+        if (signedIn()) throw Object.assign(err, { during: 'token' });
+      } finally {
+        tokenMs += performance.now() - t;
+      }
+      if (!access) throw Object.assign(new Error(force ? 'Please sign in again' : 'Please sign in'), { unauthorised: true });
+      return access;
+    };
+    const send = async (access) => {
+      const attempt = () => timedFetch(path, {
+        method,
+        keepalive,
+        headers: { Authorization: `Bearer ${access}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+        cache: 'no-store',
+      }, timeoutMs(method !== 'GET'), async (res) => {
+        if (res.status === 401) return res;
+        if (!res.ok) {
+          const detail = await res.json().catch(() => ({}));
+          throw Object.assign(new Error(detail.error || `The server said ${res.status}`), { status: res.status, detail });
+        }
+        return Object.assign(res, { data: await res.json() });
+      });
+      try {
+        return await attempt();
+      } catch (err) {
+        if (!idempotent || !(err.timeout || err.network)) throw err;
+        entry.retry = err.timeout ? 'timeout' : 'network';
+        return attempt();
+      }
+    };
+    try {
+      let res = await send(await token(false));
+      // A token the server no longer takes: refresh it and try once more.
+      if (res.status === 401) res = await send(await token(true));
+      entry.status = res.status;
+      if (res.status === 401) throw Object.assign(new Error('Please sign in again'), { unauthorised: true });
+      return res.data;
+    } catch (err) {
+      entry.status ??= err.timeout ? 'timeout' : err.network ? 'network' : err.unauthorised ? 'signed-out' : err.status ?? 'error';
+      if (err.during) entry.during = err.during;
+      throw err;
+    } finally {
+      const ms = Math.round(performance.now() - t0);
+      if (!quiet || ms >= SLOW_MS || entry.retry || entry.status !== 200) logger('api', { ...entry, ms, tokenMs: Math.round(tokenMs) });
     }
-    if (res.status === 401) throw Object.assign(new Error('Please sign in again'), { unauthorised: true });
-    if (!res.ok) {
-      const detail = await res.json().catch(() => ({}));
-      throw Object.assign(new Error(detail.error || `The server said ${res.status}`), { status: res.status, detail });
-    }
-    return res.json();
   }
 
   me() {
@@ -196,11 +297,11 @@ export class Api {
 
   // Moves your position on (the server never moves it back). Returns where it is.
   async savePosition(position, { keepalive = false } = {}) {
-    return (await this.request('/api/position', { method: 'PUT', body: { position }, keepalive })).position;
+    return (await this.request('/api/position', { method: 'PUT', body: { position }, keepalive, idempotent: true, quiet: true })).position;
   }
 
   async markAllRead() {
-    return (await this.request('/api/position', { method: 'PUT', body: { latest: true } })).position;
+    return (await this.request('/api/position', { method: 'PUT', body: { latest: true }, idempotent: true })).position;
   }
 
   // `target` is { item_id } for an article or { status_id } for a post.
@@ -271,7 +372,7 @@ export class Api {
   }
 
   event(target, kind) {
-    return this.request('/api/event', { method: 'POST', body: { ...target, kind }, keepalive: true }).catch(() => {});
+    return this.request('/api/event', { method: 'POST', body: { ...target, kind }, keepalive: true, quiet: true }).catch(() => {});
   }
 }
 

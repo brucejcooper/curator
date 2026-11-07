@@ -1,4 +1,4 @@
-import { Api, accessToken, beginLogin, clientConfig, compareIds, finishLogin, nextId, refreshSettled, signOut, signedIn } from './api.js';
+import { Api, accessToken, beginLogin, clientConfig, compareIds, finishLogin, nextId, refreshSettled, setLogger, signOut, signedIn, timedFetch } from './api.js';
 import { runOnboarding, showProfile } from './profile.js';
 import { el, renderCurated, renderStatus, safariUrl } from './render.js';
 import { showSuggestions } from './suggestions.js';
@@ -75,6 +75,10 @@ const diag = {
     });
   },
 };
+
+// Every API call that was slow, failed, timed out or was retried, a compact
+// line for the rest, and each token refresh (see Api.request in api.js).
+setLogger((event, data) => diag.log(event, data));
 
 window.addEventListener('error', (e) => diag.log('error', { msg: e.message, at: `${(e.filename || '').split('/').pop()}:${e.lineno}` }));
 window.addEventListener('unhandledrejection', (e) => diag.log('error', { msg: String(e.reason?.message || e.reason) }));
@@ -252,13 +256,13 @@ async function reload() {
 }
 
 const UPDATE_CHECK_MS = 30 * 60_000;
+const VERSION_TIMEOUT_MS = 10_000;
 let loadedVersion = null;
 let loadedBuilt = null;
 
 async function fetchVersion() {
   try {
-    const res = await fetch('version.json', { cache: 'no-store' });
-    return res.ok ? await res.json() : null;
+    return await timedFetch('version.json', { cache: 'no-store' }, VERSION_TIMEOUT_MS, (res) => (res.ok ? res.json() : null));
   } catch {
     return null;
   }
@@ -354,10 +358,12 @@ class Reader {
     if (this.me.problems?.length) showToast(this.me.problems.join(' · '));
     this.bindUi();
     this.resolvePosition();
-    await this.loadHistory();
+    // Unreachable even on the retry: say so now rather than wait as long
+    // again for the next page.
+    const unreachable = !(await this.loadHistory());
     // Load until there's a screenful below the first unread entry (or nothing
     // more), so jumping to it isn't cut short by the bottom of the page.
-    for (let i = 0; i < 10 && !this.caughtUp; i++) {
+    for (let i = 0; i < 10 && !this.caughtUp && !unreachable; i++) {
       const first = this.articles()[this.readCursor];
       if (first && this.end.getBoundingClientRect().top - first.getBoundingClientRect().top > window.innerHeight) break;
       if (!(await this.loadMore())) break;
@@ -370,8 +376,10 @@ class Reader {
     }, { root: this.pane, rootMargin: '1500px 0px 0px 0px' }).observe($('#older'));
     new IntersectionObserver((entries) => {
       if (!entries.some((e) => e.isIntersecting)) return;
-      if (!this.caughtUp) this.loadMore();
-      else if (Date.now() - this.lastChecked > MIN_RECHECK_MS) this.checkForNew({ background: true });
+      // After a failure, Retry is for the reader to tap.
+      if (!this.caughtUp) {
+        if ($('#retry').hidden) this.loadMore();
+      } else if (Date.now() - this.lastChecked > MIN_RECHECK_MS) this.checkForNew({ background: true });
     }, { root: this.pane, rootMargin: '0px 0px 2000px 0px' }).observe(this.end);
   }
 
@@ -391,9 +399,9 @@ class Reader {
   }
 
   // A few already-read entries above the reading position, so scrolling up
-  // shows where you were.
+  // shows where you were. False when the server couldn't be reached.
   async loadHistory() {
-    if (!this.position) return;
+    if (!this.position) return true;
     try {
       const page = await this.api.before(nextId(this.position), HISTORY_SIZE);
       this.oldest = page.cursor;
@@ -407,10 +415,14 @@ class Reader {
       }
       diag.log('history', { got: page.items.length, oldest: this.oldest });
     } catch (err) {
-      diag.log('history-failed', { status: err.status ?? err.message });
-      if (err.unauthorised) return this.handleError(err);
+      diag.log('history-failed', { status: err.timeout ? 'timeout' : err.network ? 'network' : err.status ?? err.message });
+      if (err.unauthorised || err.timeout || err.network) {
+        this.handleError(err);
+        return false;
+      }
       console.warn('Could not load read entries', err);
     }
+    return true;
   }
 
   // Put the first unread entry just under the header. With nothing unread,
@@ -644,8 +656,12 @@ class Reader {
   // we've caught up: the timeline has short pages mid-way (the curator drops
   // posts that miss the bar, Mastodon drops deleted or muted ones).
   async loadMore({ force = false, background = false } = {}) {
+    // Asked for while a background check is running: that check's failure
+    // is then this one's, and shows.
+    if (this.loading && !background) this.userWaiting = true;
     if (this.loading || (this.caughtUp && !force)) return;
     this.loading = true;
+    this.userWaiting = !background;
     let ok = false;
     let failed = false;
     let result = 'Fetched';
@@ -673,7 +689,8 @@ class Reader {
       this.trackRead();
       ok = true;
     } catch (err) {
-      diag.log('load-failed', { status: err.status ?? err.message, background });
+      background = !this.userWaiting;
+      diag.log('load-failed', { status: err.timeout ? 'timeout' : err.network ? 'network' : err.status ?? err.message, background });
       if (background && !err.unauthorised) {
         console.warn('Background check failed', err);
         $('#last-checked').textContent = "Couldn't check for new posts, will try again shortly.";
@@ -684,8 +701,10 @@ class Reader {
       }
     } finally {
       this.loading = false;
-      // Always settle the status line, whatever happened above.
-      if (!failed) this.endBusy(result);
+      // Always settle the status line, whatever happened above: handleError
+      // has said why a load failed; a failed background check says nothing here.
+      if (ok) this.endBusy(result);
+      else if (!failed) this.setStatus('');
     }
     // Keep going while the end is close (but never retry in a loop).
     if (ok && !this.caughtUp && this.end.getBoundingClientRect().top < window.innerHeight + 2000) await this.loadMore();
@@ -857,8 +876,14 @@ class Reader {
       setTimeout(() => reload(), 1500);
       return;
     }
-    this.setStatus('Could not load posts.');
     $('#retry').hidden = false;
+    // No answer (after the one retry), or no connection: say so where the
+    // posts would be, with Retry under it, rather than in a toast as well.
+    if (err.timeout || err.network) {
+      this.setStatus("Couldn't reach the server.");
+      return;
+    }
+    this.setStatus('Could not load posts.');
     showError(err);
   }
 
@@ -1202,6 +1227,10 @@ async function boot() {
     showToast({ connected: 'Mastodon connected: posts from your home timeline will appear within 15 minutes', declined: 'Mastodon not connected', failed: "Couldn't connect Mastodon; try again" }[mastodon] || '');
   }
 
+  await start();
+}
+
+async function start() {
   if (!signedIn()) return showLogin();
   try {
     if (!(await accessToken())) return showLogin();
@@ -1210,12 +1239,24 @@ async function boot() {
     // curator just couldn't be reached (a restart, a blip), try again shortly.
     if (!signedIn()) return showLogin();
     showError(err);
-    setTimeout(boot, 3000);
+    setTimeout(start, 3000);
     return;
   }
   const api = new Api();
+  let me;
   try {
-    const me = await api.me();
+    me = await api.me();
+  } catch (err) {
+    showError(err);
+    if (err.unauthorised) {
+      signOut();
+      return showLogin();
+    }
+    // The same for the curator: try again rather than leave the spinner up.
+    setTimeout(start, 3000);
+    return;
+  }
+  try {
     if (!me.onboarded) return await onboard(api);
     await new Reader(api, me).start();
   } catch (err) {
