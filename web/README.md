@@ -33,6 +33,11 @@ the curator's `/api/` (see `../README.md`).
   back to the foreground, at the end of the page, and by pulling up.
 - **Updates**: the server's `version.json` is the deployed version; the app
   reloads itself when it changes.
+- **Offline and slow starts**: `sw.js` serves the app's own files from the
+  network, but from its cache if the network hasn't answered in 1.5 s (and
+  then for the rest of that start), refreshing the cache in the background.
+  Each start's timings (the page, each file, the server's `Server-Timing`,
+  what the service worker did) go in the diagnostics log; see `js/app.js`.
 
 Reading behaviour (what counts as read, the iOS scroll quirks, the faded
 history above your position, "Open links in Safari", diagnostics) is

@@ -9,7 +9,10 @@ a status page that your reverse proxy should put behind single sign-on (admins).
 import hmac
 import html
 import json
+import logging
 import os
+import re
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -17,10 +20,13 @@ from urllib.parse import urlsplit
 
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import MutableHeaders
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from curator import instagram, mastodon_connect, people, reader, store
 from curator.auth import User, user_from_token
@@ -30,6 +36,8 @@ from curator.publish import feed_folder
 
 WEB = Path(__file__).resolve().parent.parent / "web"
 VERSION = os.environ.get("CURATOR_VERSION", "")  # the deployed commit; the app reloads when it changes
+
+log = logging.getLogger("curator.http")
 
 
 def now() -> str:
@@ -451,7 +459,58 @@ async def version(request: Request) -> Response:
                         status_code=200 if VERSION else 404, headers={"Cache-Control": "no-store"})
 
 
+class Shell(StaticFiles):
+    """The reader app's files. Their Nix store mtime is 1970, so without
+    Cache-Control a browser may guess they're fresh for years and serve stale
+    ones under the service worker; no-cache makes it ask every time (the etag
+    keeps that a quick 304)."""
+
+    def file_response(self, *args, **kwargs) -> Response:
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+FEED_SECRET = re.compile(r"^/f/[^/]+")
+
+
+def logged_path(path: str) -> str:
+    """The path as logged: never a feed's secret (the query string is never
+    looked at at all)."""
+    return FEED_SECRET.sub("/f/…", path)
+
+
+class Timing:
+    """Every response says how long the server took (Server-Timing, which
+    the reader's resource timings pick up for its diagnostics log), and each
+    request is one line in the journal, so a slow start can be matched up from
+    both ends."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        started = time.perf_counter()
+        status = 500
+
+        async def timed(message):
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+                MutableHeaders(scope=message).append("Server-Timing", f"app;dur={(time.perf_counter() - started) * 1000:.1f}")
+            await send(message)
+
+        try:
+            await self.app(scope, receive, timed)
+        finally:
+            ms = (time.perf_counter() - started) * 1000
+            log.info("%s %s %d %.1fms%s", scope["method"], logged_path(scope["path"]), status, ms, " cached" if status == 304 else "")
+
+
 app = Starlette(
+    middleware=[Middleware(Timing)],
     routes=[
         Route("/api/me", api(me, needs_profile=False)),
         Route("/api/onboarding", api(onboarding, needs_profile=False), methods=["POST"]),
@@ -482,7 +541,7 @@ app = Starlette(
         Route("/version.json", version),
         Route("/config.json", client_config),
         Mount("/media", StaticFiles(directory=instagram.MEDIA, check_dir=False)),
-        Mount("/", StaticFiles(directory=WEB, html=True, check_dir=False)),
+        Mount("/", Shell(directory=WEB, html=True, check_dir=False)),
     ],
 )
 app.state.rescore = set()  # readers whose feed needs re-scoring and re-publishing

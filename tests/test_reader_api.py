@@ -2,6 +2,7 @@
 timeline (merged in id order), position, votes, profile and feed."""
 
 import json
+import re
 
 import httpx
 import pytest
@@ -140,3 +141,30 @@ def test_the_app_is_served(client):
     assert page.status_code == 200 and "Sign in" in page.text
     assert client.get("/js/app.js").status_code == 200
     assert client.get("/status").status_code == 200  # Caddy puts this behind authentik
+
+
+def test_the_app_shell_is_always_revalidated(client):
+    js = client.get("/js/app.js")
+    assert js.headers["cache-control"] == "no-cache"
+    again = client.get("/js/app.js", headers={"If-None-Match": js.headers["etag"]})
+    assert again.status_code == 304
+
+
+def test_every_response_is_timed_and_logged_without_secrets(client, db, alex, caplog):
+    caplog.set_level("INFO", logger="curator.http")
+    secret = db.execute("SELECT feed_path FROM users WHERE id = 'alex'").fetchone()[0]
+    assert client.get("/healthz").headers["server-timing"].startswith("app;dur=")
+    assert "server-timing" in client.get("/api/me", headers=auth()).headers
+    assert "server-timing" in client.get("/api/me").headers  # a 401 too
+    client.get(f"/f/{secret}/feed.json?token=hush")
+    client.get("/?code=the-code&state=s")
+    etag = client.get("/styles.css").headers["etag"]
+    client.get("/styles.css", headers={"If-None-Match": etag})
+    lines = [r.getMessage() for r in caplog.records if r.name == "curator.http"]
+    assert any(re.fullmatch(r"GET /api/me 200 \d+\.\dms", line) for line in lines), lines
+    assert any(line.startswith("GET /api/me 401 ") for line in lines)
+    assert any(line.startswith("GET /f/…/feed.json 200 ") for line in lines)
+    assert any(line.startswith("GET / 200 ") for line in lines)
+    assert any(line.startswith("GET /styles.css 304 ") and line.endswith(" cached") for line in lines)
+    text = "\n".join(lines)
+    assert secret not in text and "hush" not in text and "the-code" not in text and "?" not in text

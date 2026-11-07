@@ -4,6 +4,9 @@
 //   APP_URL=http://localhost:8124/ node test/e2e.mjs
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
+import http from 'node:http';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 const APP = process.env.APP_URL || 'http://localhost:8124/';
 const AUTH = 'https://sso.example';
@@ -433,6 +436,14 @@ const report = await page.evaluate(() => navigator.clipboard.readText());
 assert.match(report, /^Reader diagnostics/);
 assert.ok(!/acc\d|ref\d/.test(report), 'no tokens in the report');
 assert.ok(!report.includes('Post number'), 'no post text in the report');
+// Start-up timing and memory, without the sign-in return's query string.
+// (This page's fake clock hides the browser's timings: see "a slow network".)
+assert.match(report, / boot sinceOriginMs=\d+ origin=[\d:.]+ nav=\w+ sw=\w+ visibility=visible nodes=\d+ /);
+assert.match(report, / ready screen=login sinceOriginMs=\d+ nodes=\d+ cards=0 /, 'the sign-in screen counts as ready');
+assert.match(report, / ready screen=reader sinceOriginMs=\d+ nodes=\d+ cards=\d+ /);
+assert.match(report, /^memory: \d+ DOM nodes, \d+ cards, \d+ images, \d+ log entries, localStorage \d+ KB$/m);
+assert.match(report, /^heap: heap size not measurable here \(iOS Safari/m);
+assert.ok(!report.includes('the-code') && !/[?&](code|state)=/.test(report), 'no sign-in code in the report');
 await page.click('#settings-close');
 
 // Reload: picks up where we were, read entries above; the two that arrived
@@ -763,6 +774,75 @@ await ctx.close();
   await up.click('#check-update');
   await up.waitForFunction(() => /up to date/.test(document.querySelector('#app-version').textContent));
   await upd.close();
+}
+
+// ---------------------------------------------------------------- a slow network
+// With the service worker installed, a start on a hung connection shows the
+// reader from its cache after a short wait instead of keeping the spinner up,
+// and says so in the log. Served from a server of our own here, since
+// Playwright's routes don't see what a service worker fetches.
+{
+  const root = new URL('..', import.meta.url).pathname;
+  const types = { html: 'text/html', js: 'text/javascript', css: 'text/css', json: 'application/json', webmanifest: 'application/manifest+json', svg: 'image/svg+xml', png: 'image/png' };
+  let shellDelay = 0;
+  const changed = {}; // path → content, as after a deploy
+  const server = http.createServer(async (req, res) => {
+    const path = new URL(req.url, 'http://x').pathname;
+    if (path === '/config.json') return res.end(JSON.stringify({ authority: ISSUER, client_id: 'mastorss' }));
+    if (shellDelay && path !== '/sw.js') await new Promise((r) => setTimeout(r, shellDelay));
+    if (changed[path]) return res.writeHead(200, { 'Content-Type': types[path.split('.').pop()], 'Cache-Control': 'no-cache' }).end(changed[path]);
+    try {
+      const body = await readFile(join(root, path === '/' ? 'index.html' : path));
+      res.writeHead(200, { 'Content-Type': types[path.split('.').pop()] || 'text/html', 'Cache-Control': 'no-cache' });
+      res.end(body);
+    } catch {
+      res.writeHead(404).end();
+    }
+  });
+  await new Promise((r) => server.listen(8125, r));
+  const SLOW_APP = 'http://localhost:8125/';
+  const session = signedIn();
+  const sc = await browser.newContext({ viewport: { width: 390, height: 800 }, serviceWorkers: 'allow', permissions: ['clipboard-read', 'clipboard-write'] });
+  await fakes(sc);
+  await sc.addInitScript(([s]) => localStorage.setItem('reader.session', JSON.stringify(s)), [session]);
+  const sp = await sc.newPage();
+  await sp.goto(SLOW_APP);
+  await sp.waitForSelector('#timeline article');
+  await sp.waitForFunction(() => navigator.serviceWorker.controller?.state === 'activated');
+  // A normal load keeps the cache up to date with what the server has.
+  const css = await readFile(join(root, 'styles.css'), 'utf8');
+  changed['/styles.css'] = `${css}\n/* deployed later */\n`;
+  await sp.reload();
+  await sp.waitForSelector('#timeline article');
+  const cachedCss = async () => sp.evaluate(async () => (await (await caches.match(new URL('styles.css', location.href).href))?.text()) || '');
+  for (let i = 0; i < 20 && !(await cachedCss()).includes('deployed later'); i++) await sp.waitForTimeout(100);
+  assert.ok((await cachedCss()).includes('deployed later'), 'the cached shell follows the server after a normal load');
+  shellDelay = 8000; // as good as hung
+  const t0 = Date.now();
+  await sp.reload({ waitUntil: 'commit' });
+  await sp.waitForSelector('#timeline article', { timeout: 6000 });
+  const took = Date.now() - t0;
+  assert.ok(took < 3500, `the reader shows from the cache within ~2 s on a hung connection (took ${took} ms)`);
+  await sp.click('#menu');
+  await sp.click('#copy-diagnostics');
+  let slowReport = await sp.evaluate(() => navigator.clipboard.readText());
+  for (let i = 0; i < 20 && !/from=skipped/.test(slowReport); i++) {
+    await sp.waitForTimeout(250);
+    await sp.click('#copy-diagnostics');
+    slowReport = await sp.evaluate(() => navigator.clipboard.readText());
+  }
+  assert.match(slowReport, / sw-fetch path=\/ at=[\d:.]+ sinceOriginMs=-?\d+ ms=1\d\d\d from=timeout/, 'the page timed out, from the cache');
+  assert.match(slowReport, / sw-fetch path=\/js\/app\.js .*from=skipped/, 'the rest straight from the cache');
+  assert.match(slowReport, / ready screen=reader sinceOriginMs=\d+ /);
+  assert.match(slowReport, / boot sinceOriginMs=\d+ origin=[\d:.]+ nav=reload sw=activated /);
+  assert.match(slowReport, / nav workerStart=\d+ fetchStart=\d+ .*responseEnd=\d+ domInteractive=\d+ transferSize=0 /, 'the page came from the service worker');
+  assert.match(slowReport, / res why=\w+ n=\d+ all=.*\/js\/app\.js@\d+\+\d+ 0B/);
+  assert.match(slowReport, /\/api\/me@\d+\+\d+/, 'API calls too, by path');
+  assert.match(slowReport, /^heap: \d+ MB \(performance\.memory\)$/m, 'Chromium has performance.memory');
+  assert.match(slowReport, /^serviceWorker: activated$/m);
+  shellDelay = 0;
+  await sc.close();
+  server.close();
 }
 
 // ---------------------------------------------------------------- staying signed in

@@ -46,9 +46,9 @@ const store = {
 // ---------------------------------------------------------------- diagnostics
 // A rolling log of what the app did and why, for working out odd behaviour
 // on a phone where there are no developer tools. Settings → Copy diagnostics
-// puts it on the clipboard. It records ids and positions only: no post text,
-// names or tokens. It survives reloads, since iOS reloading the app is often
-// part of the story.
+// puts it on the clipboard. It records ids, positions, paths and timings
+// only: no post text, names, tokens or query strings. It survives reloads,
+// since iOS reloading the app is often part of the story.
 
 const DIAG_KEY = 'reader.diag';
 const DIAG_MAX = 400;
@@ -78,6 +78,143 @@ const diag = {
 
 window.addEventListener('error', (e) => diag.log('error', { msg: e.message, at: `${(e.filename || '').split('/').pop()}:${e.lineno}` }));
 window.addEventListener('unhandledrejection', (e) => diag.log('error', { msg: String(e.reason?.message || e.reason) }));
+// Leaving the page (signing in, a reload) mustn't lose the last few lines.
+window.addEventListener('pagehide', () => diag.save());
+
+// ---------------------------------------------------------------- start-up
+// Where the time goes between tapping the app and seeing the reader: the
+// boot spinner is up while the page and its modules load (through sw.js),
+// before any of this runs, so it is measured afterwards from the browser's
+// own timings (Navigation and Resource Timing, ms since the navigation
+// started), and from what sw.js noted about its fetches. Paths only: a
+// sign-in return carries its code in the query string.
+// Memory: iOS Safari has no way to read the JS heap (performance.memory is
+// Chrome's; measureUserAgentSpecificMemory needs cross-origin isolation), so
+// what is logged are the things that grow with it: DOM nodes, cards, images,
+// the size of localStorage, how far down the page is scrolled.
+
+const SLOW_RESOURCE_MS = 1000; // resources slower than this get a line of their own
+const HEAP_NOTE = 'heap size not measurable here (iOS Safari has no performance.memory, and measureUserAgentSpecificMemory needs cross-origin isolation)';
+const sinceOrigin = () => Math.round(performance.now());
+const pathOf = (url) => new URL(url, location.href).pathname;
+// Local time of day, as in the log's own timestamps.
+const clock = (t) => `${new Date(t).toTimeString().slice(0, 8)}.${String(Math.floor(t % 1000)).padStart(3, '0')}`;
+
+function memory() {
+  let storage = 0;
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      storage += k.length + (localStorage.getItem(k) || '').length;
+    }
+  } catch {}
+  const m = {
+    nodes: document.getElementsByTagName('*').length,
+    cards: $('#timeline')?.children.length ?? 0,
+    images: document.images.length,
+    diag: diag.entries.length,
+    storageKB: Math.round((storage * 2) / 1024), // UTF-16
+    scrollY: Math.round($('#pane')?.scrollTop ?? 0),
+  };
+  if (Number.isFinite(performance.memory?.usedJSHeapSize)) m.heapMB = Math.round(performance.memory.usedJSHeapSize / 1048576);
+  return m;
+}
+
+// Only where the page is cross-origin isolated (it isn't today); a browser
+// may take a while to answer, so don't wait long.
+async function measuredMemory() {
+  if (!window.crossOriginIsolated || !performance.measureUserAgentSpecificMemory) return null;
+  const result = await Promise.race([performance.measureUserAgentSpecificMemory().catch(() => null), new Promise((r) => setTimeout(r, 1000))]);
+  return result ? Math.round(result.bytes / 1048576) : null;
+}
+
+function logBoot() {
+  const nav = performance.getEntriesByType('navigation')[0];
+  const sw = navigator.serviceWorker?.controller;
+  diag.log('boot', {
+    sinceOriginMs: sinceOrigin(),
+    origin: clock(performance.timeOrigin),
+    nav: nav?.type ?? 'unknown',
+    sw: sw ? sw.state : 'none',
+    visibility: document.visibilityState,
+    ...memory(),
+  });
+  if (!nav) return;
+  const at = (k) => Math.round(nav[k]);
+  diag.log('nav', {
+    workerStart: at('workerStart'), fetchStart: at('fetchStart'),
+    dns: `${at('domainLookupStart')}-${at('domainLookupEnd')}`, connect: `${at('connectStart')}-${at('connectEnd')}`,
+    requestStart: at('requestStart'), responseStart: at('responseStart'), responseEnd: at('responseEnd'),
+    domInteractive: at('domInteractive'), transferSize: nav.transferSize, proto: nav.nextHopProtocol || 'unknown',
+  });
+}
+
+// The same-origin resources this page fetched so far (not pictures), each
+// logged once: slow ones a line each, the rest one compact line of
+// path@start+duration, 0B for a copy from the service worker or the cache,
+// and the server's own time (Server-Timing) where it said.
+const loggedResources = new Set();
+function logResources(why) {
+  const quick = [];
+  for (const r of performance.getEntriesByType('resource')) {
+    const url = new URL(r.name);
+    const key = `${r.name} ${r.startTime}`;
+    if (url.origin !== location.origin || url.pathname.startsWith('/media/') || r.initiatorType === 'img' || loggedResources.has(key)) continue;
+    loggedResources.add(key);
+    const app = r.serverTiming?.find((s) => s.name === 'app')?.duration;
+    if (r.duration > SLOW_RESOURCE_MS) {
+      diag.log('res', {
+        path: url.pathname, startTime: Math.round(r.startTime), workerStart: Math.round(r.workerStart),
+        responseStart: Math.round(r.responseStart), duration: Math.round(r.duration), transferSize: r.transferSize,
+        ...(app != null && { serverMs: Math.round(app) }),
+      });
+    } else {
+      quick.push(`${url.pathname}@${Math.round(r.startTime)}+${Math.round(r.duration)}${r.transferSize === 0 ? ' 0B' : ''}${app != null ? ` app${Math.round(app)}` : ''}`);
+    }
+  }
+  if (quick.length) diag.log('res', { why, n: quick.length, all: quick.join(', ') });
+}
+
+// What sw.js noted about slow, timed-out or failed fetches (kept in Cache
+// Storage until a page reads them). One read at a time, so none is logged twice.
+let swLogRead = Promise.resolve();
+function logServiceWorker() {
+  swLogRead = swLogRead.then(readServiceWorkerLog);
+}
+
+async function readServiceWorkerLog() {
+  try {
+    const scope = (await navigator.serviceWorker?.getRegistration())?.scope;
+    const name = scope && `mastorss-swlog ${scope}`;
+    if (!name || !(await caches.has(name))) return;
+    const cache = await caches.open(name);
+    for (const key of await cache.keys()) {
+      const res = await cache.match(key);
+      const { t, path, ...rest } = res ? await res.json() : {};
+      await cache.delete(key);
+      // sinceOriginMs < 0: before this page started (an earlier start's fetch).
+      if (path) diag.log('sw-fetch', { path: pathOf(path), at: clock(t), sinceOriginMs: Math.round(t - performance.timeOrigin), ...rest });
+    }
+  } catch {}
+}
+
+// The reader (or the sign-in or onboarding screen) is on show: how long the
+// spinner was up, then the timings of what it waited on.
+let readyLogged = false;
+function logReady(screen) {
+  if (readyLogged) return;
+  readyLogged = true;
+  diag.log('ready', { screen, sinceOriginMs: sinceOrigin(), ...memory() });
+  logResources('ready');
+  logServiceWorker();
+}
+
+logBoot();
+window.addEventListener('load', () => {
+  diag.log('loaded', { sinceOriginMs: sinceOrigin() });
+  logResources('load');
+  logServiceWorker();
+});
 
 function showToast(text) {
   const bar = $('#toast');
@@ -168,6 +305,7 @@ function showLogin() {
   $('#boot').hidden = true;
   $('#login').hidden = false;
   $('#reader').hidden = true;
+  logReady('login');
   $('#login-button').onclick = () => beginLogin().catch(showError);
   clientConfig().then((c) => c.sign_in && ($('#login-button').textContent = c.sign_in)).catch(() => {});
 }
@@ -176,6 +314,7 @@ function showLogin() {
 async function onboard(api) {
   $('#boot').hidden = true;
   $('#onboarding').hidden = false;
+  logReady('onboarding');
   await runOnboarding(api, { showError });
   reload();
 }
@@ -224,6 +363,7 @@ class Reader {
       if (!(await this.loadMore())) break;
     }
     this.jumpToFirstUnread();
+    logReady('reader');
     // Only start infinite loading once we know where the reader is up to.
     new IntersectionObserver((entries) => {
       if (entries.some((e) => e.isIntersecting)) this.loadOlder();
@@ -441,12 +581,13 @@ class Reader {
     this.bindPull();
 
     document.addEventListener('visibilitychange', () => {
-      diag.log(document.visibilityState === 'hidden' ? 'hidden' : 'visible', { scrollY: Math.round(this.pane.scrollTop) });
       if (document.visibilityState === 'hidden') {
+        diag.log('hidden', memory());
         diag.save();
         this.savePosition({ keepalive: true });
-      } else if (this.caughtUp) {
-        this.checkForNew({ background: true });
+      } else {
+        diag.log('visible', { scrollY: Math.round(this.pane.scrollTop) });
+        if (this.caughtUp) this.checkForNew({ background: true });
       }
     });
     window.addEventListener('pagehide', () => this.savePosition({ keepalive: true }));
@@ -889,7 +1030,9 @@ class Reader {
     }
   }
 
-  diagnosticsText() {
+  diagnosticsText(heapMB = null) {
+    const m = memory();
+    const sw = navigator.serviceWorker?.controller;
     const state = {
       app: versionLabel(),
       copied: new Date().toString(),
@@ -902,6 +1045,9 @@ class Reader {
       onPage: `${this.articles().length} entries, first unread index ${this.readCursor}, ${this.articles().length - this.readCursor} unread`,
       caughtUp: this.caughtUp,
       scrollY: `${Math.round(pane().scrollTop)} of ${pane().scrollHeight}`,
+      serviceWorker: sw ? sw.state : 'none',
+      memory: `${m.nodes} DOM nodes, ${m.cards} cards, ${m.images} images, ${m.diag} log entries, localStorage ${m.storageKB} KB`,
+      heap: heapMB != null ? `${heapMB} MB (measured)` : m.heapMB != null ? `${m.heapMB} MB (performance.memory)` : HEAP_NOTE,
     };
     return [
       'Reader diagnostics',
@@ -916,7 +1062,8 @@ class Reader {
   // Mail, Notes...); failing both, select the text so it can be copied.
   async copyDiagnostics() {
     diag.log('diagnostics-copied');
-    const text = this.diagnosticsText();
+    // No await before the clipboard otherwise: iOS wants it straight from the tap.
+    const text = this.diagnosticsText(window.crossOriginIsolated ? await measuredMemory() : null);
     try {
       await navigator.clipboard.writeText(text);
       showToast('Diagnostics copied. Paste them into a message.');
