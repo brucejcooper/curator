@@ -438,7 +438,8 @@ def describe(c: dict) -> str:
             f"verdicts: {c.get('heuristic', 0)} by heuristic, {c.get('cached', 0)} cached, {c.get('jev', 0)} Jev, "
             f"{c.get('haiku', 0)} Haiku ({c.get('haiku_tokens', 0):,} tokens; cap {HAIKU_DAILY}, "
             f"{c.get('haiku_capped', 0)} past it); {per:.2f} model calls per new item; "
-            f"{c.get('failed', 0)} unreadable, {c.get('timeouts', 0)} out of time")
+            f"{c.get('failed', 0)} unreadable, {c.get('timeouts', 0)} out of time; "
+            f"{c.get('linked', 0)} put in a story by a link, {c.get('original_leads', 0)} leads kept or given to an original")
 
 
 def count(conn, stats: Counter) -> None:
@@ -448,6 +449,14 @@ def count(conn, stats: Counter) -> None:
 
 
 # ── Following ────────────────────────────────────────────────────────────────
+
+def points(chain: dict, url: str, verdict: str) -> None:
+    """Where the chain's last hop points, and the verdict on it (pointer,
+    value, undecided), kept with the item it becomes (`points_to`), so a
+    wrapper kept as an item of its own gives way to its original as a
+    story's lead (stories.choose_lead)."""
+    chain["points_to"] = {"url": canonical_url(url), "verdict": verdict} if followable(url) else None
+
 
 def follow(conn, items: list[dict], tally: dict | None = None) -> dict[str, tuple[str, str]]:
     """Moves each new item that is just a wrapper down to what it wraps (in
@@ -501,12 +510,13 @@ def follow(conn, items: list[dict], tally: dict | None = None) -> dict[str, tupl
             # Where each wrapper points: its cached verdict, else what its page says.
             loading = []
             for c in active:
-                w = c["hops"][-1]
+                w = c["examined"] = c["hops"][-1]
                 memo = c.pop("cached", None) or (cached(conn, w["url"]) if len(c["hops"]) > 1 else None)
                 if memo:
                     stats["cached"] += 1
                     if memo["verdict"] != "pointer":
                         c["done"] = True
+                        points(c, memo["next"], memo["verdict"])
                         continue
                     c["verdict"] = ("pointer", None)
                     nxt = memo["next"]
@@ -517,6 +527,7 @@ def follow(conn, items: list[dict], tally: dict | None = None) -> dict[str, tupl
                     c["done"] = True
                     continue
                 c["seen"].add(key)
+                points(c, nxt, "pointer" if memo else "undecided")  # until it's decided
                 if target := stored_hop(conn, nxt):
                     c["target"] = target
                 else:
@@ -530,6 +541,7 @@ def follow(conn, items: list[dict], tally: dict | None = None) -> dict[str, tupl
             for c in ready:
                 if c["target"].get("paywalled"):
                     c["done"] = True  # can't be read: the wrapper is what there is
+                    c["points_to"] = None
             ready = [c for c in ready if not c["done"]]
 
             # Decide: the heuristics, then Jev for the grey cases, then Haiku.
@@ -581,11 +593,26 @@ def follow(conn, items: list[dict], tally: dict | None = None) -> dict[str, tupl
                     remember(conn, c["hops"][-1], c["target"], verdict, method)
                 if verdict != "pointer":
                     c["done"] = True  # it has value, or nobody could say: it stays
+                    if verdict == "value":
+                        c["points_to"]["verdict"] = "value"
                     continue
+                c["points_to"] = None
                 c["hops"].append(c.pop("target"))
                 stats["hops"] += 1
                 c["done"] = c["hops"][-1].get("stored", False)  # the original is already an item
             conn.commit()  # the verdicts: don't hold the write lock through the next round's fetches
+
+    for c in chains:
+        # A hop reached but not looked at (out of hops, or of time): where it points is undecided.
+        last = c["hops"][-1] if c["hops"] else None
+        if last and c.get("examined") is not last and not last.get("stored"):
+            memo = c.get("cached")
+            nxt = memo["next"] if memo else last.get("next")
+            if followable(nxt) and canonical_url(nxt) not in c["seen"]:
+                points(c, nxt, memo["verdict"] if memo else "undecided")
+        for it in c["items"]:
+            if c.get("points_to"):
+                it["points_to"] = {**c["points_to"], "via": [it["shared_by"]] if it.get("shared_by") and len(c["hops"]) == 1 else []}
 
     moved = [c for c in chains if len(c["hops"]) > 1]
     for c in moved:

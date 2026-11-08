@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import random
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 
@@ -14,7 +15,8 @@ import numpy as np
 from curator import store
 from curator.articles import fill_text, needs_text
 from curator.canon import canonical_url, item_id, title_key
-from curator.follow import follow
+from curator.follow import count as count_follow, follow, host
+from curator.images import POST_URL
 
 log = logging.getLogger(__name__)
 EMBED_MODEL = os.environ.get("CURATOR_EMBED_MODEL", "BAAI/bge-small-en-v1.5")
@@ -161,6 +163,29 @@ def add_via(conn, iid: str, via: list[dict]) -> None:
         conn.execute("UPDATE items SET via = ? WHERE id = ?", (json.dumps(known + new), iid))
 
 
+def link_story(conn, it: dict, stories: list, touched: set) -> str | None:
+    """The story a new item belongs to by a link, whatever the embedding
+    says: that of the stored item it points to (`points_to`), and that of
+    any stored wrapper pointing to it. Several are merged into one. `stories`
+    (the recent items' stories) and `touched` follow the merge."""
+    found = []
+    if p := it.get("points_to"):
+        found += [r[0] for r in conn.execute("SELECT story_id FROM items WHERE id = ?", (item_id(p["url"]),))]
+    found += [r[0] for r in conn.execute("SELECT i.story_id FROM points_to p JOIN items i ON i.id = p.item_id WHERE p.url = ?",
+                                         (it["canonical"],))]
+    found = list(dict.fromkeys(s for s in found if s))
+    if not found:
+        return None
+    into = found[0]
+    for other in found[1:]:
+        merge_story(conn, into, other)
+        stories[:] = [into if s == other else s for s in stories]
+        touched.discard(other)
+    if len(found) > 1:
+        count_follow(conn, Counter(linked=len(found) - 1))
+    return into
+
+
 def ingest(conn, found: list[dict], tally: dict | None = None, follow_wrappers: bool = True) -> list[str]:
     """Store new items; returns the ids that are new. A new item that only
     wraps another (follow.py) is stored as the one it wraps, seen where it
@@ -202,6 +227,9 @@ def ingest(conn, found: list[dict], tally: dict | None = None, follow_wrappers: 
     grey: list[tuple[str, str]] = []  # (new item, earlier item) for Jev to settle
     for it, v in zip(fresh, vectors):
         story = find_story(v, it["source"], ids, stories, sources, matrix)
+        if (linked := link_story(conn, it, stories, touched)) and linked != story:
+            count_follow(conn, Counter(linked=1))
+            story = linked
         grey += [(it["id"], other) for other in grey_matches(v, it["source"], story, ids, stories, sources, matrix)]
         if story is None:
             story = it["id"]
@@ -216,6 +244,9 @@ def ingest(conn, found: list[dict], tally: dict | None = None, follow_wrappers: 
              json.dumps(it["poster"]) if it.get("poster") else None, json.dumps(it["via"]) if it.get("via") else None),
         )
         conn.execute("INSERT OR IGNORE INTO sightings VALUES (?, ?, ?, ?)", (it["id"], it["source"], it["seen_at"], stamp))
+        if p := it.get("points_to"):
+            conn.execute("INSERT OR REPLACE INTO points_to VALUES (?, ?, ?, ?)",
+                         (it["id"], p["url"], p["verdict"], json.dumps(p.get("via") or [])))
         ids.append(it["id"])
         stories.append(story)
         sources.append(it["source"])
@@ -281,12 +312,53 @@ def best_version(rows: list, reputation: dict):
     return max(rows, key=merit)
 
 
+def wrappers(conn, ids: list[str]) -> dict[str, tuple[str, list]]:
+    """Of these items, those that point to another of them and don't add
+    value to it (a pointer, or undecided): {wrapper: (what it points to,
+    the post that shared the wrapper, as `via`)}."""
+    marks = ",".join("?" * len(ids))
+    points = {r[0]: (item_id(r[1]), store.json_or_none(r[2]) or []) for r in conn.execute(
+        f"SELECT item_id, url, via FROM points_to WHERE verdict IN ('pointer', 'undecided') AND item_id IN ({marks})", ids)}
+    return {w: t for w, t in points.items() if t[0] in ids and t[0] != w}
+
+
+def via_entry(row) -> dict:
+    """An item, as a `via` entry of the item it points to."""
+    url, poster = row["url"], store.json_or_none(row["poster"]) or {}
+    kind = "bluesky" if url.startswith("https://bsky.app/") else "mastodon" if POST_URL.match(url) else "article"
+    name = (poster.get("name") or row["author"] if kind != "article" else
+            row["source"].removeprefix("rss:") if row["source"].startswith("rss:") else host(url))
+    return {"url": url, "name": name or url, "kind": kind, "author": row["author"] or ""}
+
+
 def choose_lead(conn, story: str, reputation: dict | None = None) -> None:
-    """The story's lead, for everyone: its best version."""
+    """The story's lead, for everyone: its best version. An item that only
+    points to another of the story (follow.py: a pointer, or undecided)
+    never leads over it, whatever its summary, date or source; it's added
+    to the `via` of the item it points to instead. A wrapper that adds
+    value is a version like any other."""
     reputation = reputation if reputation is not None else source_reputation(conn)
-    rows = conn.execute("SELECT id, summary, source, published FROM items WHERE story_id = ?", (story,)).fetchall()
+    rows = conn.execute("SELECT id, url, summary, source, published, author, poster, via FROM items WHERE story_id = ?",
+                        (story,)).fetchall()
     if not rows:
         return
-    lead = best_version(rows, reputation)["id"]
+    pointing = wrappers(conn, [r["id"] for r in rows])
+    lead = best_version([r for r in rows if r["id"] not in pointing] or rows, reputation)["id"]
+    if pointing:
+        by_id = {r["id"]: r for r in rows}
+
+        def end(w):  # the item a chain of wrappers comes to, and how far
+            seen, steps = {w}, 0
+            while w in pointing and pointing[w][0] not in seen:
+                w = pointing[w][0]
+                seen.add(w)
+                steps += 1
+            return w, steps
+
+        for w in sorted(pointing, key=lambda w: -end(w)[1]):  # outermost first
+            r = by_id[w]
+            add_via(conn, end(w)[0], pointing[w][1] + (store.json_or_none(r["via"]) or []) + [via_entry(r)])
+        if lead != best_version(rows, reputation)["id"]:  # the rule, not the scores, chose it
+            count_follow(conn, Counter(original_leads=1))
     conn.execute("UPDATE stories SET lead_id = ?, updated = ? WHERE id = ?",
                  (lead, datetime.now(timezone.utc).isoformat(timespec="seconds"), story))

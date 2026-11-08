@@ -212,7 +212,9 @@ def test_wrappers_reach_the_app_and_the_cost_shows_on_status(client, db):
     write_feed("alex", [art("art-a", "1001"), original])
     items = client.get("/api/timeline?after=999", headers=auth()).json()["items"]
     assert [e["via"] for e in items] == [[], via]
-    store.put(db, follow.day_key(), {"considered": 10, "followed": 2, "hops": 3, "heuristic": 6, "jev": 2, "haiku": 1, "haiku_tokens": 900})
+    store.put(db, follow.day_key(), {"considered": 10, "followed": 2, "hops": 3, "heuristic": 6, "jev": 2, "haiku": 1, "haiku_tokens": 900,
+                                     "linked": 4, "original_leads": 1})
     db.commit()
     page = client.get("/status").text
     assert "2 of 10 new items followed, 3 hops down" in page and "1 Haiku (900 tokens; cap 300" in page and "0.30 model calls per new item" in page
+    assert "4 put in a story by a link, 1 leads kept or given to an original" in page

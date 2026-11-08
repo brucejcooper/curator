@@ -38,6 +38,13 @@ CREATE TABLE IF NOT EXISTS sightings (  -- every place an item was seen
 );
 CREATE INDEX IF NOT EXISTS sightings_source ON sightings(source);
 CREATE TABLE IF NOT EXISTS stories (id TEXT PRIMARY KEY, lead_id TEXT, first_seen TEXT, updated TEXT);
+CREATE TABLE IF NOT EXISTS points_to (  -- where a new item points, if it's kept as an item of its own (follow.py)
+  item_id TEXT PRIMARY KEY,
+  url TEXT,                     -- the canonical URL of its next hop
+  verdict TEXT,                 -- pointer, value, undecided (past the cap, out of time, nobody sure)
+  via TEXT                      -- JSON: the post that shared it, if any, as a `via` entry list
+);
+CREATE INDEX IF NOT EXISTS points_to_url ON points_to(url);
 CREATE TABLE IF NOT EXISTS hops (       -- whether a page or post is just a pointer to the next (follow.py)
   url TEXT PRIMARY KEY,         -- the wrapper's canonical URL
   next_url TEXT, verdict TEXT,  -- pointer, value

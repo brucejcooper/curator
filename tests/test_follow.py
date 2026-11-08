@@ -363,4 +363,137 @@ def test_garbage_pages_and_answers_change_nothing(db, web, models, similarity):
     items = [article(u) for u in junk if "api" not in u] + [article("not a url at all"), article("https://empty.example/")]
     before = [dict(it) for it in items]
     follow.follow(db, items)
-    assert items == before
+    # Unchanged, but for where they point when that could be read (undecided: the next hop wasn't).
+    assert [{k: v for k, v in it.items() if k != "points_to"} for it in items] == before
+    assert {it["url"]: it["points_to"]["verdict"] for it in items if "points_to" in it} == {
+        "https://masto-garbage.example/p": "undecided", "https://bsky-garbage.example/p": "undecided"}
+
+
+# ── A wrapper kept as an item of its own: its original leads the story ────────
+
+@pytest.fixture
+def apart(monkeypatch):
+    """bge-small stand-in that puts every text in a direction of its own: the
+    embedding never groups anything, and no wrapper reads like its target."""
+    dims: dict[str, int] = {}
+
+    def embed(texts):
+        return np.array([np.eye(384, dtype=np.float32)[dims.setdefault(t, len(dims))] for t in texts])
+
+    monkeypatch.setattr("curator.stories.embed", embed)
+
+
+@pytest.fixture
+def favours_wrappers(monkeypatch):
+    """Source reputation on the wrappers' side: today's lead criteria pick them."""
+    monkeypatch.setattr("curator.stories.source_reputation", lambda conn, user=None: {"rss:Hackaday": 0.9, "rss:A Blog": 0.9})
+
+
+def store_toot(db):
+    from curator.collect import from_status
+
+    it = from_status(status(), "mastodon:#homeassistant")
+    it["published"] = "2026-11-07T08:00:00+00:00"
+    assert ingest(db, [it]) == [item_id(TOOT)]
+
+
+def wrapper_item(url, published, source="rss:Hackaday", title="A Pen Plotter From A Dead Printer"):
+    """A wrapper with every one of today's lead criteria for it: a summary
+    longer than the toot's, a trusted source, and the date given."""
+    it = article(url, title, "Our friend [maker] has built a pen plotter. " * 20, source)
+    it["published"] = published
+    return it
+
+
+def lead_of(db, iid):
+    return db.execute("SELECT s.lead_id FROM stories s JOIN items i ON i.story_id = s.id WHERE i.id = ?", (iid,)).fetchone()[0]
+
+
+def unfollowed(how, monkeypatch, models):
+    """The wrapper isn't followed: the Haiku cap is reached, or time runs out
+    once its page is read."""
+    if how == "cap":
+        monkeypatch.setattr(follow, "HAIKU_DAILY", 0)
+        models["noul"] = 0.5
+    else:
+        real = follow.load
+
+        def slow(*args, **kwargs):
+            found = real(*args, **kwargs)
+            monkeypatch.setattr(follow, "BUDGET", -1)
+            return found
+
+        monkeypatch.setattr(follow, "load", slow)
+
+
+@pytest.mark.parametrize("published", ["2026-11-07T07:00:00+00:00", "2026-11-08T09:00:00+00:00"])  # first, or freshest
+@pytest.mark.parametrize("how", ["cap", "timeout"])
+def test_the_original_stays_the_lead_when_a_wrapper_arrives_unfollowed(db, web, models, apart, favours_wrappers, monkeypatch,
+                                                                       how, published):
+    from curator.stories import best_version, source_reputation
+
+    store_toot(db)
+    web.routes[HACKADAY] = long_page(TOOT, paragraphs=3)  # grey: Jev, then Haiku would decide
+    unfollowed(how, monkeypatch, models)
+    wrapper = wrapper_item(HACKADAY, published)
+    assert ingest(db, [wrapper]) == [item_id(HACKADAY)]  # kept as an item of its own
+    assert [tuple(r) for r in db.execute("SELECT url, verdict FROM points_to")] == [(TOOT, "undecided")]
+    # In the toot's story though the embedding put it apart, and today's
+    # criteria alone would make it the lead; the toot leads.
+    story = db.execute("SELECT story_id FROM items WHERE id = ?", (item_id(TOOT),)).fetchone()[0]
+    rows = db.execute("SELECT id, summary, source, published FROM items WHERE story_id = ?", (story,)).fetchall()
+    assert len(rows) == 2 and best_version(rows, source_reputation(db))["id"] == item_id(HACKADAY)
+    assert lead_of(db, item_id(TOOT)) == item_id(TOOT)
+    via = json.loads(db.execute("SELECT via FROM items WHERE id = ?", (item_id(TOOT),)).fetchone()[0])
+    assert via == [{"url": HACKADAY, "name": "Hackaday", "kind": "article", "author": ""}]
+    c = follow.counts(db)
+    assert c["linked"] == 1 and c["original_leads"] == 1
+
+
+def test_an_original_arriving_after_its_wrapper_joins_and_leads(db, web, models, apart, favours_wrappers, monkeypatch):
+    web.routes[HACKADAY] = long_page(TOOT, paragraphs=3)
+    web.routes["https://chaos.social/api/v1/statuses/113456789012345678"] = httpx.ReadTimeout("slow")
+    ingest(db, [wrapper_item(HACKADAY, "2026-11-08T09:00:00+00:00")])
+    assert [tuple(r) for r in db.execute("SELECT url, verdict FROM points_to")] == [(TOOT, "undecided")]
+    store_toot(db)
+    assert lead_of(db, item_id(HACKADAY)) == lead_of(db, item_id(TOOT)) == item_id(TOOT)
+
+
+def test_a_wrapper_that_adds_value_is_a_version_like_any_other(db, web, models, apart, favours_wrappers):
+    store_toot(db)
+    web.routes[HACKADAY] = long_page(TOOT, paragraphs=3)
+    models["noul"] = 0.9  # Jev: it adds value
+    ingest(db, [wrapper_item(HACKADAY, "2026-11-08T09:00:00+00:00")])
+    assert [tuple(r) for r in db.execute("SELECT url, verdict FROM points_to")] == [(TOOT, "value")]
+    assert lead_of(db, item_id(TOOT)) == item_id(HACKADAY)  # same story by the link; the better version leads
+    assert db.execute("SELECT via FROM items WHERE id = ?", (item_id(TOOT),)).fetchone()[0] is None
+
+
+def test_the_original_leads_over_a_chain_of_wrappers(db, web, models, apart, favours_wrappers, monkeypatch):
+    # Bruce's: a Bluesky post sharing Hackaday, which points to the toot; and
+    # a blog pointing to Hackaday. None followed (the cap); the toot leads.
+    store_toot(db)
+    unfollowed("cap", monkeypatch, models)
+    web.routes[HACKADAY] = long_page(TOOT, paragraphs=3)
+    shared = from_bsky(skeet(), "bluesky:#plotters")
+    shared["published"] = "2026-11-08T09:00:00+00:00"
+    ingest(db, [shared])
+    blog = "https://blog.example/plotters"
+    web.routes[blog] = long_page(HACKADAY, paragraphs=3)
+    ingest(db, [wrapper_item(blog, "2026-11-08T10:00:00+00:00", "rss:A Blog", "Plotters I have known")])
+    story = {r[0] for r in db.execute("SELECT story_id FROM items")}
+    assert len(story) == 1 and lead_of(db, item_id(TOOT)) == item_id(TOOT)
+    via = json.loads(db.execute("SELECT via FROM items WHERE id = ?", (item_id(TOOT),)).fetchone()[0])
+    assert [v["url"] for v in via] == [SKEET, HACKADAY, blog]  # "via A Blog · via Hackaday · via @fan.bsky.social on Bluesky"
+
+
+def test_stories_without_wrappers_lead_as_before(db, apart):
+    from curator.stories import best_version, choose_lead
+
+    for iid, summary, published in (("a", "short", "2026-11-08T01:00:00+00:00"), ("b", "x" * 700, "2026-11-08T02:00:00+00:00")):
+        db.execute("INSERT INTO items (id, url, canonical, title, summary, source, published, fetched, story_id) "
+                   "VALUES (?, ?, ?, '', ?, 'rss:X', ?, ?, 's')", (iid, f"https://x.example/{iid}", f"https://x.example/{iid}", summary, published, NOW))
+    db.execute("INSERT INTO stories VALUES ('s', 'a', ?, ?)", (NOW, NOW))
+    choose_lead(db, "s")
+    rows = db.execute("SELECT id, summary, source, published FROM items").fetchall()
+    assert db.execute("SELECT lead_id FROM stories").fetchone()[0] == best_version(rows, {})["id"] == "b"

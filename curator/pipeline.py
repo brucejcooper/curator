@@ -185,7 +185,7 @@ def purge(conn) -> None:
     old = (now - KEEP_ITEMS).isoformat(timespec="seconds")
     conn.execute("""DELETE FROM items WHERE fetched < ? AND id NOT IN (SELECT item_id FROM user_votes)
                     AND id NOT IN (SELECT item_id FROM user_bookmarks)""", (old,))
-    for table, column in (("sightings", "item_id"), ("judgments", "item_id")):
+    for table, column in (("sightings", "item_id"), ("judgments", "item_id"), ("points_to", "item_id")):
         conn.execute(f"DELETE FROM {table} WHERE {column} NOT IN (SELECT id FROM items)")
     conn.execute("DELETE FROM stories WHERE id NOT IN (SELECT story_id FROM items)")
     conn.execute("DELETE FROM feed_history WHERE story_id NOT IN (SELECT id FROM stories)")

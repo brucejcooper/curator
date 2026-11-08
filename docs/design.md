@@ -69,9 +69,18 @@ picks what each reader would want, learning from what they actually read.
    different sources within 72 hours that are close enough are one story.
    Pairs in the grey zone are put to Jev ("the same story?"), including an
    outlet's own reposts and one event split over several articles (a beta
-   day's post per OS). Each story's
+   day's post per OS). A wrapper kept as an item of its own (not followed:
+   past the Haiku cap, out of time, or nobody sure) and the item it points
+   to are one story by definition, whatever the embedding says, in either
+   order of arrival; each new item's next hop and the verdict on it are
+   kept (`points_to`) for this. Each story's
    lead is its most informative version: a fuller summary, first to report,
-   a source the readers trust, fresh.
+   a source the readers trust, fresh. But an item that points to another of
+   its story and doesn't add value to it (a pointer, or undecided) never
+   leads over it: it's taken out of the running, and becomes a "via" of
+   what it points to. A wrapper that adds value is a version like any
+   other. `/status` counts the items put in a story by a link and the leads
+   the rule decided.
 4. **Judge**, cheapest first. Rules for everyone (not English, hashtag soup,
    labelled sponsored by its source).
    Then the item's **traits**, asked once for everyone: how significant it
