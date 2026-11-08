@@ -45,7 +45,8 @@ visit is a short interview that writes their first profile.
 | `CURATOR_SIGN_IN_LABEL` | The sign-in button's text |
 | `CURATOR_OWNER` | The admin's username |
 | `CURATOR_SECRET_KEY` | A Fernet key, for Mastodon tokens at rest (`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`) |
-| `ANTHROPIC_API_KEY`, `JEV_API_KEY` | Claude (profiles) and Jev (judging) |
+| `ANTHROPIC_API_KEY`, `JEV_API_KEY` | Claude (profiles, and Haiku where Jev can't say whether a wrapper adds anything) and Jev (judging) |
+| `CURATOR_FOLLOW_MODEL`, `CURATOR_FOLLOW_HAIKU_DAILY` | The model for that (default `claude-haiku-5-5`), and its calls a day at most (default 300) |
 | `MASTODON_SERVER`, `MASTODON_TOKEN` | The owner's Mastodon account, used to read the hashtags anyone follows (read-only) |
 | `CURATOR_REGION` | Where "significant news" is judged from, e.g. `Perth, Australia` |
 | `CURATOR_DAILY_AT`, `TZ` | When the daily jobs run (default 04:30) |

@@ -222,7 +222,7 @@ def test_the_social_cycle_publishes_only_the_readers_it_reaches(db, monkeypatch)
         def __init__(self, user, keys):
             self.user, self.sources = user, {"keys": keys}
 
-    def ingest(conn, found):
+    def ingest(conn, found, tally=None):
         for it in found:
             conn.execute("INSERT INTO sightings VALUES (?, ?, ?, ?)", (it["url"], it["source"], it["url"], collect.iso(collect.now())))
         return [it["url"] for it in found]

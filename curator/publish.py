@@ -211,6 +211,7 @@ def json_feed(conn, stories: list[dict], title: str, feed_url: str) -> dict:
                 "also": others,
                 **({"quote": json.loads(s["quote"])} if s.get("quote") else {}),
                 **({"poster": json.loads(s["poster"])} if s.get("poster") else {}),
+                **({"via": json.loads(s["via"])} if s.get("via") else {}),
             },
         })
     return {"version": "https://jsonfeed.org/version/1.1", "title": title, "home_page_url": SITE,

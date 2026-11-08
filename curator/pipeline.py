@@ -42,11 +42,12 @@ def cycle(live=None) -> dict:
         everyone = profiles(conn)
         feeds: dict = {}
         found = collect_all(conn, everyone, feeds, live)
+        tally: dict = {}
         with PROCESSING:
-            new, published = process(conn, everyone, found)
+            new, published = process(conn, everyone, found, tally=tally)
         result = {
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "found": len(found), "new": len(new), **feeds, "published": published,
+            "found": len(found), "new": len(new), "followed": tally.get("followed", 0), **feeds, "published": published,
             "seconds": round(time.monotonic() - started, 1),
         }
         store.put(conn, "last_cycle", result)
@@ -63,11 +64,12 @@ def social_cycle(found: list[dict]) -> dict:
     started = time.monotonic()
     conn = store.connect()
     try:
+        tally: dict = {}
         with PROCESSING:
-            new, published = process(conn, profiles(conn), found, affected_only=True)
+            new, published = process(conn, profiles(conn), found, affected_only=True, tally=tally)
         result = {
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "found": len(found), "new": len(new), "published": published,
+            "found": len(found), "new": len(new), "followed": tally.get("followed", 0), "published": published,
             "seconds": round(time.monotonic() - started, 1),
         }
         store.put(conn, "last_social_cycle", result)
@@ -78,12 +80,14 @@ def social_cycle(found: list[dict]) -> dict:
         conn.close()
 
 
-def process(conn, everyone: list, found: list[dict], affected_only: bool = False) -> tuple[list[str], dict]:
+def process(conn, everyone: list, found: list[dict], affected_only: bool = False,
+            tally: dict | None = None) -> tuple[list[str], dict]:
     """Ingest what was found, judge what's new, publish. Every reader's feed
     is published, or with `affected_only` only those of readers who follow
-    a source something was seen in. Hold PROCESSING."""
+    a source something was seen in. `tally` gets how many new items were
+    followed to their source. Hold PROCESSING."""
     started = time.monotonic()
-    new = ingest(conn, found)
+    new = ingest(conn, found, tally)
     if new:
         apply_shared_rules(conn, new)
         judge_traits(conn, new)

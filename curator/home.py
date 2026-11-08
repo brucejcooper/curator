@@ -55,7 +55,9 @@ def learn(conn, profile: Profile, ids: list[str]) -> None:
             mapping.append((sid, item_id(it["url"])))
         else:
             mapping.append((sid, ""))  # nothing to judge (e.g. not English): no item
-    new = ingest(conn, items)
+    # Not followed to their source: a reader is waiting (following can take
+    # 20 s more), and `mapping` and judge_for use the ids as collected.
+    new = ingest(conn, items, follow_wrappers=False)
     if new:
         apply_shared_rules(conn, new)
         judge_traits(conn, new)

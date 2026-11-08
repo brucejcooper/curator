@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS items (
   sample INTEGER DEFAULT 0,     -- picked for the maybe lane's random sample
   image TEXT,                   -- picture URL; '' once looked for and none found
   quote TEXT,                   -- JSON: the post a quote post quotes {author, name, text, url, image}
-  poster TEXT                   -- JSON: who posted it, for a post or a shared link {name, avatar}
+  poster TEXT,                  -- JSON: who posted it, for a post or a shared link {name, avatar}
+  via TEXT                      -- JSON: the wrappers it was found through, outermost first [{url, name, kind, author}] (follow.py)
 );
 CREATE INDEX IF NOT EXISTS items_fetched ON items(fetched);
 CREATE INDEX IF NOT EXISTS items_story ON items(story_id);
@@ -37,6 +38,13 @@ CREATE TABLE IF NOT EXISTS sightings (  -- every place an item was seen
 );
 CREATE INDEX IF NOT EXISTS sightings_source ON sightings(source);
 CREATE TABLE IF NOT EXISTS stories (id TEXT PRIMARY KEY, lead_id TEXT, first_seen TEXT, updated TEXT);
+CREATE TABLE IF NOT EXISTS hops (       -- whether a page or post is just a pointer to the next (follow.py)
+  url TEXT PRIMARY KEY,         -- the wrapper's canonical URL
+  next_url TEXT, verdict TEXT,  -- pointer, value
+  method TEXT,                  -- heuristic, jev, haiku
+  checked TEXT,
+  via TEXT                      -- JSON: the wrapper as a `via` entry
+);
 
 -- Readers: authentik usernames.
 CREATE TABLE IF NOT EXISTS users (
@@ -144,6 +152,8 @@ def migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE items ADD COLUMN quote TEXT")
         if "poster" not in cols:
             conn.execute("ALTER TABLE items ADD COLUMN poster TEXT")
+        if "via" not in cols:
+            conn.execute("ALTER TABLE items ADD COLUMN via TEXT")
         if "traits" not in cols:
             conn.execute("ALTER TABLE items ADD COLUMN traits TEXT")
             if "jev" in cols:

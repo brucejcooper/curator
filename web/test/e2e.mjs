@@ -46,7 +46,9 @@ const state = {
   articles: [
     article(3007, 'read-one'),
     article(3013, 'between', { image: 'https://news.example/pic.jpg', summary: 'Summary of between. More at https://example.org/more.', also: [{ url: 'https://other.example/x', source: 'rss:The Verge' }],
-      quote: { author: '@jn@c.im', name: 'Jordan', text: 'The quoted post.', url: 'https://c.im/@jn/1', image: null } }),
+      quote: { author: '@jn@c.im', name: 'Jordan', text: 'The quoted post.', url: 'https://c.im/@jn/1', image: null },
+      via: [{ url: 'https://bsky.app/profile/fan.example/post/3x', name: 'A Fan', kind: 'bluesky', author: '@fan.example' },
+        { url: 'https://hackaday.com/a', name: 'Hackaday', kind: 'article', author: '' }] }),
     article(3201, 'newest', { lane: 'maybe', title: 'A post with a lot to say. A post with a lot…', summary: longPost,
       source: 'mastodon:#homelab', author: '@ana@m.example', poster: { name: 'Ana', avatar: 'https://cdn.example/avatar.png' } }),
   ],
@@ -333,6 +335,9 @@ assert.equal(await page.$(`${art} .curated-label`), null, 'a plain pick has no l
 assert.equal(await page.$eval(`${art} .curated-image img`, (i) => i.src), 'https://news.example/pic.jpg');
 assert.equal(await page.$eval(`${art} .curated-summary a`, (a) => a.href), 'https://example.org/more');
 assert.match(await page.textContent(`${art} .also`), /Also covered by The Verge/);
+assert.equal(await page.textContent(`${art} .via`), 'via Hackaday · via @fan.example on Bluesky', 'the wrappers stripped, nearest first');
+assert.deepEqual(await page.$$eval(`${art} .via a`, (a) => a.map((x) => x.href)), ['https://hackaday.com/a', 'https://bsky.app/profile/fan.example/post/3x']);
+assert.equal(await page.$('article[data-id="3007"] .via'), null, 'nothing stripped: no via line');
 assert.equal(await page.textContent(`${art} header .who strong`), 'ABC News', 'an article says its source first');
 assert.equal(await page.$eval(`${art} a.quote`, (a) => a.href), 'https://c.im/@jn/1', 'a quote post shows what it quotes, linked');
 assert.match(await page.textContent(`${art} .quote`), /Jordan @jn@c\.im\s*The quoted post\./);

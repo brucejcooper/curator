@@ -3,6 +3,7 @@ sample readers (fictional, so nothing personal lives in the repo)."""
 
 from pathlib import Path
 
+import httpx
 import pytest
 from cryptography.fernet import Fernet
 
@@ -15,6 +16,15 @@ def secret_key(monkeypatch):
     from curator import people
 
     people._fernet.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def offline(monkeypatch):
+    """Article pages (fetched for text, and to follow wrappers) are never
+    fetched from the network: every page is missing unless a test serves it."""
+    from curator import articles
+
+    monkeypatch.setattr(articles, "client", lambda: httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(404))))
 
 
 @pytest.fixture

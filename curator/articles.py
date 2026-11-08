@@ -80,11 +80,18 @@ class Paragraphs(HTMLParser):
 def extract(html: str) -> str:
     """The first few paragraphs, up to about WANT characters; the page's
     description if it has no usable paragraphs."""
-    parser = Paragraphs()
+    return first_paragraphs(parse(html, Paragraphs()))
+
+
+def parse(html: str, parser: Paragraphs) -> Paragraphs:
     try:
         parser.feed(html)
     except Exception:  # malformed pages: keep what was parsed
         pass
+    return parser
+
+
+def first_paragraphs(parser: Paragraphs) -> str:
     out, size, seen = [], 0, set()
     for p in parser.inside or parser.all:
         if size >= WANT or len(out) == MAX_PARAGRAPHS:
@@ -148,28 +155,32 @@ def page(http: httpx.Client, url: str) -> tuple[str, str]:
         return "", ""
 
 
-def fetch(http: httpx.Client, url: str) -> tuple[str, str]:
-    """(text, image) from the article page; empty strings if unreadable."""
-    html, final = page(http, url)
-    return (extract(html), preview_image(html, final) or "") if html else ("", "")
-
-
 def paywalled(html: str) -> bool:
     return bool(PAYWALL.search(html))
 
 
-def fill_text(items: list[dict]) -> None:
+def client() -> httpx.Client:
+    from curator.config import USER_AGENT
+
+    return httpx.Client(headers={"User-Agent": f"Mozilla/5.0 (compatible; {USER_AGENT})"}, timeout=8)
+
+
+def fill_text(items: list[dict], pages: dict[str, tuple[str, str]] | None = None) -> None:
     """Fills in `summary` (and `image`, if missing) for the items whose feed
     gave little or no text. Keeps a Hacker News item's discussion link; a
-    teaser stays as it was if the article can't be read."""
+    teaser stays as it was if the article can't be read. `pages` are the
+    pages already fetched ({url: (html, final url)}), not fetched again."""
     todo = [it for it in items if needs_text(it)]
     if not todo:
         return
-    from curator.config import USER_AGENT
+    pages = pages or {}
 
-    headers = {"User-Agent": f"Mozilla/5.0 (compatible; {USER_AGENT})"}
-    with httpx.Client(headers=headers, timeout=8) as http, ThreadPoolExecutor(8) as pool:
-        found = list(pool.map(lambda it: fetch(http, it["url"]), todo))
+    def text_of(http, url):
+        html, final = pages[url] if url in pages else page(http, url)
+        return (extract(html), preview_image(html, final) or "") if html else ("", "")
+
+    with client() as http, ThreadPoolExecutor(8) as pool:
+        found = list(pool.map(lambda it: text_of(http, it["url"]), todo))
     for it, (text, image) in zip(todo, found):
         hn = HN.match(it["summary"].strip())
         if hn:

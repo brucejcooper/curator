@@ -200,3 +200,19 @@ def test_diagnostics_go_to_the_journal_a_line_each(client, caplog):
                      f"diagnostics {id} 2/3 12:00:00.000 api path=/api/me",
                      f"diagnostics {id} 3/3 forged line [2J"]
     assert send("before onboarding", "sam").status_code == 200
+
+
+def test_wrappers_reach_the_app_and_the_cost_shows_on_status(client, db):
+    from curator import follow, store
+
+    via = [{"url": "https://bsky.app/profile/fan.example/post/3x", "name": "A Fan", "kind": "bluesky", "author": "@fan.example"},
+           {"url": "https://hackaday.com/a", "name": "Hackaday", "kind": "article", "author": ""}]
+    original = art("art-toot", "3000", "bluesky:#plotters")
+    original["_curator"]["via"] = via
+    write_feed("alex", [art("art-a", "1001"), original])
+    items = client.get("/api/timeline?after=999", headers=auth()).json()["items"]
+    assert [e["via"] for e in items] == [[], via]
+    store.put(db, follow.day_key(), {"considered": 10, "followed": 2, "hops": 3, "heuristic": 6, "jev": 2, "haiku": 1, "haiku_tokens": 900})
+    db.commit()
+    page = client.get("/status").text
+    assert "2 of 10 new items followed, 3 hops down" in page and "1 Haiku (900 tokens; cap 300" in page and "0.30 model calls per new item" in page

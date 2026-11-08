@@ -28,7 +28,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from curator import instagram, mastodon_connect, people, reader, shell, store
+from curator import follow, instagram, mastodon_connect, people, reader, shell, store
 from curator.auth import User, user_from_token
 from curator.collect import shared_sources
 from curator.config import PUBLIC_URL
@@ -433,6 +433,7 @@ async def status(request: Request) -> Response:
         counts = conn.execute("SELECT COUNT(*), SUM(rule IS NOT NULL), SUM(traits IS NOT NULL) FROM items WHERE fetched >= ?",
                               (day_ago,)).fetchone()
         tokens = store.get(conn, f"jev_tokens:{date.today().isoformat()}", 0)
+        following = [follow.describe(follow.counts(conn, day)) for day in (date.today(), date.today() - timedelta(days=1))]
         per = []
         for r in conn.execute("SELECT id, name, mastodon_token IS NOT NULL AS masto FROM users ORDER BY created").fetchall():
             v = conn.execute("SELECT SUM(vote > 0), SUM(vote < 0) FROM user_votes WHERE user = ?", (r["id"],)).fetchone()
@@ -451,6 +452,7 @@ async def status(request: Request) -> Response:
         ("Last cycle", json.dumps(last)), ("Last social cycle", json.dumps(last_social)),
         ("Items (24 h)", counts[0]), ("Dropped for everyone", counts[1] or 0), ("With traits", counts[2] or 0),
         ("Jev input tokens today", f"{tokens:,} (≈ ${tokens * 0.042 / 1e6:.3f})"),
+        ("Following wrappers today", following[0]), ("Following wrappers yesterday", following[1]),
     ])
     page = f"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>Curator status</title>

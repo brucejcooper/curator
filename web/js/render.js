@@ -401,6 +401,17 @@ function alsoCovered(also) {
     ...links.flatMap((a, i) => [i ? ', ' : '', el('a', { href: safeUrl(a.url), target: '_blank', rel: 'noopener noreferrer', text: sourceLabel(a.source) })]));
 }
 
+// What the curator stripped to reach the item, nearest first ("via Hackaday ·
+// via @fan on Bluesky"), each linked: `via` comes outermost first.
+function viaLine(via) {
+  const hops = (via || []).filter((v) => safeUrl(v.url)).reverse();
+  if (!hops.length) return null;
+  const label = (v) => (v.kind === 'bluesky' || v.kind === 'mastodon'
+    ? `${v.author || v.name} on ${v.kind === 'bluesky' ? 'Bluesky' : 'Mastodon'}` : v.name || new URL(safeUrl(v.url)).hostname);
+  return el('p', { class: 'via' },
+    ...hops.flatMap((v, i) => [i ? ' · ' : '', 'via ', el('a', { href: safeUrl(v.url), target: '_blank', rel: 'noopener noreferrer', text: label(v) })]));
+}
+
 // A curated article. `data-id` is its place in the timeline (a Mastodon-style
 // id), `data-item` the curator's id for votes. Tapping the card anywhere opens
 // the source; `onOpen(item)` is told when it does.
@@ -465,6 +476,8 @@ export function renderCurated(item, { onVote, onBookmark, onOpen }) {
   }
   const quoted = curatedQuote(item.quote);
   if (quoted) body.append(quoted);
+  const via = viaLine(item.via);
+  if (via) body.append(via);
   const also = alsoCovered(item.also);
   if (also) body.append(also);
   if (item.reason) body.append(el('details', { class: 'why' }, el('summary', { text: 'Why this?' }), el('p', { text: item.reason })));

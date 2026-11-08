@@ -32,7 +32,38 @@ picks what each reader would want, learning from what they actually read.
    links and points) or only a teaser ("… more…", "[…]") gets the
    article's first few paragraphs and picture, fetched once when it's new;
    a teaser's opening line is kept.
-2. **Resolve the story.** Identical links (tracking parameters stripped) and
+2. **Follow wrappers to the source.** A new item is often just a pointer:
+   a post sharing a Hackaday article that is only an advert for someone's
+   Mastodon post, which holds the real content. Each new item's page is
+   read once (shared with the text fetch above) for what it points at: a
+   canonical address on another site (a syndicated copy), the one post it
+   embeds (Mastodon, Bluesky), a quoted post, or the one place its text
+   links to, or marks as its source ("via", "h/t"). Then, cheapest first:
+   a page with few words of its own (under 60, not counting what it
+   embeds), a post with next to none (under 8: "look at this", an emoji;
+   a post's line of comment is value), or one that `bge-small` finds
+   retells its target (≥ 0.9) at no greater length, is a pointer; a page
+   with plenty of its own (400+ words) that reads unlike its target has
+   value; anything between is put to Jev
+   ("does it add value beyond what it links to?"), and where Jev is unsure
+   (0.3–0.7) or fails, to Claude Haiku, at most 300 calls a day. They
+   compare short extracts (the title and about 1,500 characters of each).
+   While it's a pointer, the item becomes what it points at, at most three
+   hops down and within about 20 s for a batch; anything unreadable, out of
+   time or past the cap keeps the hop reached, as it was before. Posts are
+   read through their APIs (a Mastodon server's public status lookup,
+   Bluesky's getPosts), never scraped; X, Instagram, Facebook, YouTube,
+   Threads, LinkedIn, TikTok and paywalled pages are never followed. The
+   reader sees the original, with the wrappers as "via Hackaday · via @fan
+   on Bluesky"; every verdict is kept by the wrapper's address for 30 days,
+   so a popular original reached through many wrappers is judged once.
+   A post a reader taps that the curator hasn't seen (their Mastodon
+   bookmarks) isn't followed: they're waiting.
+   Following happens before an item's id is fixed, so the same original
+   reached through different wrappers is one item, with a sighting for
+   each. `/status` shows the day's counts: items followed, hops, verdicts
+   by heuristic, cache, Jev and Haiku.
+3. **Resolve the story.** Identical links (tracking parameters stripped) and
    near-identical titles become one item, with every place it was seen
    recorded. Items get a local embedding (`bge-small`, on the CPU); items from
    different sources within 72 hours that are close enough are one story.
@@ -41,7 +72,7 @@ picks what each reader would want, learning from what they actually read.
    day's post per OS). Each story's
    lead is its most informative version: a fuller summary, first to report,
    a source the readers trust, fresh.
-3. **Judge**, cheapest first. Rules for everyone (not English, hashtag soup,
+4. **Judge**, cheapest first. Rules for everyone (not English, hashtag soup,
    labelled sponsored by its source).
    Then the item's **traits**, asked once for everyone: how significant it
    is as news, whether it's a news report, rage bait, an advert, hype,
@@ -50,7 +81,7 @@ picks what each reader would want, learning from what they actually read.
    everyone, a likely one only demotes it). Then, for each reader who follows
    one of its sources: their own rules, their own questions (relevance,
    topic) with their profile as context, and their local model.
-4. **Publish** each reader's feed: the deciding classifier's stories that
+5. **Publish** each reader's feed: the deciding classifier's stories that
    clear their bar, up to a daily ceiling (a slow day gives a short feed,
    not filler), plus a "maybe" lane.
 
@@ -70,7 +101,7 @@ within a minute or two, over outbound connections only:
   1.35 GB a day, even compressed, to keep a few hundred posts an hour;
   polling costs about 190 MB for about a minute's delay.
 - What arrives is queued. 45 s after the first item, the **social cycle**
-  takes the queue through the same steps 2 to 4 as the fast loop, and
+  takes the queue through the same steps 2 to 5 as the fast loop, and
   publishes only the readers who follow a source it was seen in. An empty
   queue costs nothing.
 - Collection runs alongside; processing (ingest to publish, the daily jobs,

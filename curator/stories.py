@@ -14,6 +14,7 @@ import numpy as np
 from curator import store
 from curator.articles import fill_text, needs_text
 from curator.canon import canonical_url, item_id, title_key
+from curator.follow import follow
 
 log = logging.getLogger(__name__)
 EMBED_MODEL = os.environ.get("CURATOR_EMBED_MODEL", "BAAI/bge-small-en-v1.5")
@@ -149,29 +150,53 @@ def find_story(v: np.ndarray, source: str, ids, stories, sources, matrix) -> str
     return None
 
 
-def ingest(conn, found: list[dict]) -> list[str]:
-    """Store new items; returns the ids that are new."""
+def add_via(conn, iid: str, via: list[dict]) -> None:
+    """Another way to the same item: its wrappers join the item's `via`."""
+    row = conn.execute("SELECT via FROM items WHERE id = ?", (iid,)).fetchone() if via else None
+    if row is None:
+        return
+    known = store.json_or_none(row[0]) or []
+    new = [v for v in via if v["url"] not in {k["url"] for k in known}]
+    if new:
+        conn.execute("UPDATE items SET via = ? WHERE id = ?", (json.dumps(known + new), iid))
+
+
+def ingest(conn, found: list[dict], tally: dict | None = None, follow_wrappers: bool = True) -> list[str]:
+    """Store new items; returns the ids that are new. A new item that only
+    wraps another (follow.py) is stored as the one it wraps, seen where it
+    was, unless not `follow_wrappers`. `tally` gets how many were followed."""
     now = datetime.now(timezone.utc)
     stamp = now.isoformat(timespec="seconds")
+    pages = {}
+    if follow_wrappers:
+        conn.commit()  # don't hold the write lock while following links
+        try:
+            pages = follow(conn, found, tally)
+        except Exception:  # never worse than not following
+            log.exception("following wrappers")
     ids, stories, sources, titles, matrix = recent(conn, now)
     fresh: list[dict] = []
     for it in found:
         iid = item_id(it["url"])
+        seen_at = it.get("seen_url") or it["url"]  # the wrapper's, if it was followed
         existing = conn.execute("SELECT 1 FROM items WHERE id = ?", (iid,)).fetchone()
         twin = titles.get(title_key(it["title"])) if len(it["title"]) > 20 else None
         target = iid if existing else twin
-        if target is None and any(f["id"] == iid for f in fresh):
+        if target is None and (same := next((f for f in fresh if f["id"] == iid), None)):
             target = iid
+            same["via"] = (same.get("via") or []) + [v for v in it.get("via") or [] if v not in (same.get("via") or [])]
         if target:
-            conn.execute("INSERT OR IGNORE INTO sightings VALUES (?, ?, ?, ?)", (target, it["source"], it["url"], stamp))
+            conn.execute("INSERT OR IGNORE INTO sightings VALUES (?, ?, ?, ?)", (target, it["source"], seen_at, stamp))
+            if existing:
+                add_via(conn, target, it.get("via"))
             continue
-        it = {**it, "id": iid, "canonical": canonical_url(it["url"]), "fetched": stamp}
+        it = {**it, "id": iid, "canonical": canonical_url(it["url"]), "fetched": stamp, "seen_at": seen_at}
         fresh.append(it)
         titles[title_key(it["title"])] = iid
 
     if any(needs_text(it) for it in fresh):
         conn.commit()  # don't hold the write lock while fetching articles
-        fill_text(fresh)
+        fill_text(fresh, pages)
     vectors = embed([text_of(it) for it in fresh])
     touched: set[str] = set()
     grey: list[tuple[str, str]] = []  # (new item, earlier item) for Jev to settle
@@ -183,14 +208,14 @@ def ingest(conn, found: list[dict]) -> list[str]:
             conn.execute("INSERT INTO stories VALUES (?, ?, ?, ?)", (story, it["id"], stamp, stamp))
         conn.execute(
             """INSERT INTO items (id, url, canonical, title, summary, source, author, published, fetched,
-                                  story_id, embedding, always_show, rule, sample, image, quote, poster)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                  story_id, embedding, always_show, rule, sample, image, quote, poster, via)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (it["id"], it["url"], it["canonical"], it["title"], it["summary"], it["source"], it["author"],
              it["published"], stamp, story, v.tobytes(), it["always_show"], it.get("rule"), int(random.random() < SAMPLE_RATE),
              it.get("image"), json.dumps(it["quote"]) if it.get("quote") else None,
-             json.dumps(it["poster"]) if it.get("poster") else None),
+             json.dumps(it["poster"]) if it.get("poster") else None, json.dumps(it["via"]) if it.get("via") else None),
         )
-        conn.execute("INSERT OR IGNORE INTO sightings VALUES (?, ?, ?, ?)", (it["id"], it["source"], it["url"], stamp))
+        conn.execute("INSERT OR IGNORE INTO sightings VALUES (?, ?, ?, ?)", (it["id"], it["source"], it["seen_at"], stamp))
         ids.append(it["id"])
         stories.append(story)
         sources.append(it["source"])

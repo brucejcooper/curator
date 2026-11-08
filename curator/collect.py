@@ -317,6 +317,33 @@ def mastodon_quote(s: dict) -> dict | None:
     return quoted("@" + acct["acct"], acct.get("display_name") or "", text, q.get("url") or q.get("uri") or "", photo)
 
 
+def mastodon_post(s: dict) -> dict:
+    """A Mastodon post's parts, as items are made from it (here, and when a
+    wrapper is followed to a post: follow.py): its own text, its text with
+    what it quotes, who posted it, its picture and its link card."""
+    quote = mastodon_quote(s)
+    text = plain(QUOTE_INLINE.sub("", s.get("content") or "") if quote else s.get("content"))
+    account = s["account"]
+    return {
+        "url": s.get("url") or s["uri"], "kind": "mastodon", "text": text, "quote": quote, "author": "@" + account["acct"],
+        "published": datetime.fromisoformat(s["created_at"].replace("Z", "+00:00")),
+        "poster": {"name": account.get("display_name") or "", "avatar": account.get("avatar_static") or account.get("avatar") or ""},
+        "photo": next((m.get("preview_url") or m.get("url") for m in s.get("media_attachments") or [] if m.get("type") in ("image", "gifv")), None),
+        "card": s["card"] if has_link_card(s) else None,
+    }
+
+
+def full_text(post: dict) -> str:
+    """A post's text, then what it quotes."""
+    return "\n\n".join(x for x in (post["text"], quoting(post["quote"])) if x)
+
+
+def shared_by(post: dict) -> dict:
+    """The post that shared a link, as a wrapper the reader can see ("via")
+    if the item turns out to be something further down (follow.py)."""
+    return {"url": post["url"], "kind": post["kind"], "name": post["poster"]["name"] or post["author"], "author": post["author"]}
+
+
 def from_status(s: dict, source: str, home: bool = False) -> dict | None:
     """The linked article if the post has one, else the post itself. For your
     own home timeline (`home`), followers-only, content-warned and short posts
@@ -326,24 +353,26 @@ def from_status(s: dict, source: str, home: bool = False) -> dict | None:
         return None
     if (s.get("language") or "en") != "en":
         return None
-    published = datetime.fromisoformat(s["created_at"].replace("Z", "+00:00"))
-    quote = mastodon_quote(s)
-    text = plain(QUOTE_INLINE.sub("", s.get("content") or "") if quote else s.get("content"))
-    if home and not text and not quote:  # a photo post: judge it by its descriptions
-        text = " ".join(m.get("description") or "" for m in s.get("media_attachments") or []).strip() or "(a photo)"
-    full = "\n\n".join(x for x in (text, quoting(quote)) if x)
-    author = "@" + s["account"]["acct"]
-    poster = {"name": s["account"].get("display_name") or "", "avatar": s["account"].get("avatar_static") or s["account"].get("avatar") or ""}
-    card = s.get("card") or {}
-    photo = next((m.get("preview_url") or m.get("url") for m in s.get("media_attachments") or [] if m.get("type") in ("image", "gifv")), None)
-    if has_link_card(s):
-        it = item(card["url"], card.get("title") or short_title(text or full), f"{card.get('description', '')}\n\n{author}: {full}",
-                  source, author, published, image=card.get("image") or photo)
-    elif len(full) < 80 and not home:
+    post = mastodon_post(s)
+    if home and not post["text"] and not post["quote"]:  # a photo post: judge it by its descriptions
+        post["text"] = " ".join(m.get("description") or "" for m in s.get("media_attachments") or []).strip() or "(a photo)"
+    return post_item(post, source, short_ok=home)
+
+
+def post_item(post: dict, source: str, short_ok: bool = False) -> dict | None:
+    """The item for a post (mastodon_post, bsky_post): the article it links
+    to, with the post's text in its summary, or the post itself. A short post
+    with no link says too little to judge (except where `short_ok`)."""
+    full, author, card = full_text(post), post["author"], post["card"]
+    if card:
+        it = item(card["url"], card.get("title") or short_title(post["text"] or full), f"{card.get('description', '')}\n\n{author}: {full}",
+                  source, author, post["published"], image=card.get("image") or post["photo"])
+        it["shared_by"] = shared_by(post)
+    elif len(full) < 80 and not short_ok:
         return None
     else:
-        it = item(s.get("url") or s["uri"], short_title(text or full), full, source, author, published, image=photo)
-    return {**it, "quote": quote, "poster": poster}
+        it = item(post["url"], short_title(post["text"] or full), full, source, author, post["published"], image=post["photo"])
+    return {**it, "quote": post["quote"], "poster": post["poster"]}
 
 
 def mastodon_client(server: str, token: str, timeout: float = 30) -> httpx.Client:
@@ -441,32 +470,36 @@ def mastodon_account(conn, http: httpx.Client, acct: str, roots: dict) -> list[d
 
 # ── Bluesky ──────────────────────────────────────────────────────────────────
 
-def from_bsky(p: dict, source: str) -> dict | None:
+def bsky_post(p: dict) -> dict:
+    """A Bluesky post's parts (see mastodon_post). Its link card is `card`
+    with `url`, as Mastodon's."""
     record = p.get("record", {})
-    if any(lbl.get("val") in ("porn", "sexual", "nudity", "graphic-media") for lbl in p.get("labels", [])):
-        return None
-    if record.get("langs") and "en" not in record["langs"]:
-        return None
-    published = datetime.fromisoformat(record.get("createdAt", "").replace("Z", "+00:00"))
-    author = "@" + p["author"]["handle"]
-    text = record.get("text", "")
     embed = p.get("embed") or {}
     media = embed.get("media") or embed  # recordWithMedia wraps the media
     ext = media.get("external") or {}
-    photo = next((i.get("thumb") or i.get("fullsize") for i in media.get("images") or []), None)
-    quote = bsky_quote(embed)
-    full = "\n\n".join(x for x in (text, quoting(quote)) if x)
-    if ext.get("uri"):
-        it = item(ext["uri"], ext.get("title") or short_title(text or full), f"{ext.get('description', '')}\n\n{author}: {full}",
-                  source, author, published, image=ext.get("thumb") or photo)
-    elif len(full) < 80:
+    handle = p["author"]["handle"]
+    return {
+        "url": f"https://bsky.app/profile/{handle}/post/{p['uri'].rsplit('/', 1)[-1]}", "kind": "bluesky",
+        "text": record.get("text", ""), "quote": bsky_quote(embed), "author": "@" + handle,
+        "published": datetime.fromisoformat(record.get("createdAt", "").replace("Z", "+00:00")),
+        "poster": {"name": p["author"].get("displayName") or "", "avatar": p["author"].get("avatar") or ""},
+        "photo": next((i.get("thumb") or i.get("fullsize") for i in media.get("images") or []), None),
+        "card": {"url": ext["uri"], "title": ext.get("title"), "description": ext.get("description", ""), "image": ext.get("thumb")}
+                if ext.get("uri") else None,
+    }
+
+
+def bsky_unwanted(p: dict) -> bool:
+    """Labelled adult, or not in English."""
+    langs = (p.get("record") or {}).get("langs")
+    return (any(lbl.get("val") in ("porn", "sexual", "nudity", "graphic-media") for lbl in p.get("labels", []))
+            or bool(langs and "en" not in langs))
+
+
+def from_bsky(p: dict, source: str) -> dict | None:
+    if bsky_unwanted(p):
         return None
-    else:
-        rkey = p["uri"].rsplit("/", 1)[-1]
-        it = item(f"https://bsky.app/profile/{p['author']['handle']}/post/{rkey}", short_title(text or full), full, source, author,
-                  published, image=photo)
-    poster = {"name": p["author"].get("displayName") or "", "avatar": p["author"].get("avatar") or ""}
-    return {**it, "quote": quote, "poster": poster}
+    return post_item(bsky_post(p), source)
 
 
 def bsky_quote(embed: dict) -> dict | None:

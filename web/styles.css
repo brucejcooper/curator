@@ -165,6 +165,8 @@ button { font: inherit; color: inherit; }
 .show-more { margin-top: 0.3rem; font-size: 0.9rem; }
 .also { margin: 0.4rem 0 0; font-size: 0.85rem; color: var(--muted); }
 .also a { text-decoration: none; }
+.via { margin: 0.4rem 0 0; font-size: 0.85rem; color: var(--muted); }
+.via a { text-decoration: none; }
 details.why { margin-top: 0.4rem; font-size: 0.85rem; color: var(--muted); }
 details.why > summary { cursor: pointer; width: max-content; }
 details.why p { margin: 0.3rem 0 0; }

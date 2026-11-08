@@ -53,7 +53,7 @@ def articles(user: str) -> list[dict]:
                 "image": it.get("image"), "published": it.get("date_published"),
                 "author": (it.get("authors") or [{}])[0].get("name") or "", "source": c.get("source", ""),
                 "lane": c.get("lane", "main"), "reason": c.get("reason") or "", "also": c.get("also") or [],
-                "trial": c.get("trial"),
+                "trial": c.get("trial"), "via": c.get("via") or [],
             })
         out.sort(key=lambda a: num(a["id"]))
         cached = _articles_cache[user] = {"mtime": mtime, "items": out}
@@ -136,13 +136,14 @@ def bookmarks(conn, user: str) -> dict:
     """The reader's bookmarks, newest first, and their Mastodon bookmarks if
     they've connected Mastodon."""
     rows = conn.execute(
-        """SELECT i.id, i.url, i.title, i.summary, i.image, i.source, i.published, i.author, i.quote
+        """SELECT i.id, i.url, i.title, i.summary, i.image, i.source, i.published, i.author, i.quote, i.via
            FROM user_bookmarks b JOIN items i ON i.id = b.item_id WHERE b.user = ? ORDER BY b.time DESC LIMIT 500""",
         (user,)).fetchall()
     quote = lambda r: json.loads(r["quote"]) if r["quote"] else None
     kept = [{"kind": "article", "id": f"bookmark-{r['id']}", "item": r["id"], "url": r["url"], "title": r["title"],
              "summary": without_quote(r["summary"] or "", quote(r)), "quote": quote(r), "image": r["image"], "published": r["published"], "author": r["author"] or "",
-             "source": r["source"], "lane": "main", "reason": "", "also": [], "bookmarked": True} for r in rows]
+             "source": r["source"], "lane": "main", "reason": "", "also": [], "via": json.loads(r["via"]) if r["via"] else [],
+             "bookmarked": True} for r in rows]
     posts = []
     creds = people.mastodon(conn, user)
     if creds:
