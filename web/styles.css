@@ -359,6 +359,9 @@ dialog > button.danger { color: var(--danger); }
 @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2s; } }
 .boot { position: fixed; inset: 0; display: grid; place-items: center; color: var(--accent); font-size: 2rem; }
 .boot .spinner { margin: 0; border-width: 3px; }
+/* The watchdog's message (js/boot.js), when the app couldn't start. */
+.boot.failed { place-content: center; gap: 1rem; padding: 1.5rem; color: inherit; font-size: 1rem; text-align: center; }
+.boot.failed p { margin: 0; }
 
 .version-row { text-align: center; margin: 0.8rem 0 0; font-size: 0.8rem; }
 

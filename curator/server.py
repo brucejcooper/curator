@@ -28,7 +28,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from curator import instagram, mastodon_connect, people, reader, store
+from curator import instagram, mastodon_connect, people, reader, shell, store
 from curator.auth import User, user_from_token
 from curator.collect import shared_sources
 from curator.config import PUBLIC_URL
@@ -38,6 +38,7 @@ from curator.social import BLUESKY_EVERY
 
 WEB = Path(__file__).resolve().parent.parent / "web"
 VERSION = os.environ.get("CURATOR_VERSION", "")  # the deployed commit; the app reloads when it changes
+SHELL = shell.build(WEB) if WEB.is_dir() else shell.Shell()  # the reader app's files, hashed (#20)
 
 log = logging.getLogger("curator.http")
 
@@ -539,20 +540,8 @@ async def client_config(request: Request) -> Response:
 
 
 async def version(request: Request) -> Response:
-    return JSONResponse({"version": VERSION or None, "built": os.environ.get("CURATOR_BUILT")} if VERSION else {},
+    return JSONResponse({"version": VERSION or None, "built": os.environ.get("CURATOR_BUILT"), "shell": SHELL.version} if VERSION else {},
                         status_code=200 if VERSION else 404, headers={"Cache-Control": "no-store"})
-
-
-class Shell(StaticFiles):
-    """The reader app's files. Their Nix store mtime is 1970, so without
-    Cache-Control a browser may guess they're fresh for years and serve stale
-    ones under the service worker; no-cache makes it ask every time (the etag
-    keeps that a quick 304)."""
-
-    def file_response(self, *args, **kwargs) -> Response:
-        response = super().file_response(*args, **kwargs)
-        response.headers["Cache-Control"] = "no-cache"
-        return response
 
 
 FEED_SECRET = re.compile(r"^/f/[^/]+")
@@ -626,7 +615,7 @@ app = Starlette(
         Route("/version.json", version),
         Route("/config.json", client_config),
         Mount("/media", StaticFiles(directory=instagram.MEDIA, check_dir=False)),
-        Mount("/", Shell(directory=WEB, html=True, check_dir=False)),
+        Mount("/", shell.App(SHELL)),
     ],
 )
 app.state.rescore = set()  # readers whose feed needs re-scoring and re-publishing

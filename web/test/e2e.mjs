@@ -5,7 +5,9 @@
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const APP = process.env.APP_URL || 'http://localhost:8124/';
@@ -827,47 +829,111 @@ await ctx.close();
   await upd.close();
 }
 
-// ---------------------------------------------------------------- a slow network
-// With the service worker installed, a start on a hung connection shows the
-// reader from its cache after a short wait instead of keeping the spinner up,
-// and says so in the log. Served from a server of our own here, since
-// Playwright's routes don't see what a service worker fetches.
+// ---------------------------------------------------------------- the service worker
+// The shell as the curator serves it (curator/shell.py: hashed names, the
+// version written into sw.js), from a server of our own, since Playwright's
+// routes don't see what a service worker fetches. Each `deploy` builds a
+// changed copy of web/ the way the curator does at start-up.
 {
   const root = new URL('..', import.meta.url).pathname;
+  const repo = join(root, '..');
+  const python = process.env.CURATOR_PYTHON || join(repo, '.venv', 'bin', 'python');
+  const work = await mkdtemp(join(tmpdir(), 'reader-shell-'));
+  const out = join(work, 'out');
   const types = { html: 'text/html', js: 'text/javascript', css: 'text/css', json: 'application/json', webmanifest: 'application/manifest+json', svg: 'image/svg+xml', png: 'image/png' };
+  let n = 0;
+  // Builds web/ with `edits` (path → (text) => text) applied; returns the version id.
+  const deploy = async (edits = {}) => {
+    const src = join(work, `web${++n}`);
+    await cp(root, src, { recursive: true, filter: (p) => !/node_modules|\/test(\/|$)/.test(p.slice(root.length)) });
+    for (const [path, edit] of Object.entries(edits)) await writeFile(join(src, path), edit(await readFile(join(src, path), 'utf8')));
+    await rm(out, { recursive: true, force: true });
+    const built = spawnSync(python, ['-m', 'curator.shell', src, out], { cwd: repo, encoding: 'utf8' });
+    assert.equal(built.status, 0, built.stderr);
+    return built.stdout.trim();
+  };
+  const files = async () => JSON.parse((await readFile(join(out, 'sw.js'), 'utf8')).match(/const FILES = (\[.*\]);/)[1]);
+
   let shellDelay = 0;
-  const changed = {}; // path → content, as after a deploy
+  let failing = null; // a path that answers 500
+  let seeding = false; // serving as before hashing: the v4 worker and a stale api.js
+  const staleApi = (await readFile(join(root, 'js/api.js'), 'utf8')).replace('export function setLogger', 'function setLogger').replace('export async function timedFetch', 'async function timedFetch');
   const server = http.createServer(async (req, res) => {
     const path = new URL(req.url, 'http://x').pathname;
     if (path === '/config.json') return res.end(JSON.stringify({ authority: ISSUER, client_id: 'mastorss' }));
     if (shellDelay && path !== '/sw.js') await new Promise((r) => setTimeout(r, shellDelay));
-    if (changed[path]) return res.writeHead(200, { 'Content-Type': types[path.split('.').pop()], 'Cache-Control': 'no-cache' }).end(changed[path]);
+    if (path === failing) return res.writeHead(500).end();
+    const type = types[path.split('.').pop()] || 'text/html';
+    if (seeding) {
+      // As the phone saw it: no Cache-Control, so caches may keep a copy for years.
+      if (path === '/seed') return res.writeHead(200, { 'Content-Type': 'text/html' }).end('<script>navigator.serviceWorker.register("./sw.js")</script>');
+      if (path === '/sw.js') return res.writeHead(200, { 'Content-Type': type }).end(await readFile(join(root, 'test/sw-v4.js')));
+      if (path === '/js/api.js') return res.writeHead(200, { 'Content-Type': type, 'Last-Modified': new Date(0).toUTCString() }).end(staleApi);
+    }
     try {
-      const body = await readFile(join(root, path === '/' ? 'index.html' : path));
-      res.writeHead(200, { 'Content-Type': types[path.split('.').pop()] || 'text/html', 'Cache-Control': 'no-cache' });
-      res.end(body);
+      const body = await readFile(join(seeding ? root : out, path === '/' ? 'index.html' : path));
+      const cache = /\.[0-9a-f]{10}\.\w+$/.test(path) ? 'public, max-age=31536000, immutable' : 'no-cache';
+      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': seeding ? 'max-age=31536000' : cache }).end(body);
     } catch {
       res.writeHead(404).end();
     }
   });
   await new Promise((r) => server.listen(8125, r));
-  const SLOW_APP = 'http://localhost:8125/';
+  const SW_APP = 'http://localhost:8125/';
   const session = signedIn();
   const sc = await browser.newContext({ viewport: { width: 390, height: 800 }, serviceWorkers: 'allow', permissions: ['clipboard-read', 'clipboard-write'] });
   await fakes(sc);
   await sc.addInitScript(([s]) => localStorage.setItem('reader.session', JSON.stringify(s)), [session]);
   const sp = await sc.newPage();
-  await sp.goto(SLOW_APP);
-  await sp.waitForSelector('#timeline article');
+  const cacheNames = () => sp.evaluate(() => caches.keys());
+  const until = async (what, test) => {
+    for (let i = 0; i < 50; i++) if (await test()) return;
+    else await sp.waitForTimeout(100);
+    assert.fail(what);
+  };
+  // Every file of the version, and the page, in its cache.
+  const whole = async (version, names) => sp.evaluate(async ([v, names]) => {
+    const c = await caches.open(`mastorss-${v} ${new URL('./', location.href).href}`);
+    const have = new Set((await c.keys()).map((r) => r.url));
+    return [new URL('./', location.href).href, ...names.map((f) => new URL(f, location.href).href)].every((u) => have.has(u)) && have.size === names.length + 1;
+  }, [version, names]);
+
+  // (a) The phone's state (#20): the old v4 worker, and an api.js from before
+  // #9 in both its cache and the HTTP cache. The new app.js imports what that
+  // api.js lacks, but under hashed names no cache has, so it still boots, and
+  // the new worker drops v4.
+  seeding = true;
+  await sp.goto(`${SW_APP}seed`);
   await sp.waitForFunction(() => navigator.serviceWorker.controller?.state === 'activated');
-  // A normal load keeps the cache up to date with what the server has.
-  const css = await readFile(join(root, 'styles.css'), 'utf8');
-  changed['/styles.css'] = `${css}\n/* deployed later */\n`;
+  await sp.evaluate(() => fetch('js/api.js'));
+  assert.ok((await cacheNames()).includes('mastorss-v4 http://localhost:8125/'));
+  assert.doesNotMatch(await sp.evaluate(async () => (await (await caches.match('js/api.js')).text())), /export async function timedFetch/, 'v4 holds the stale api.js');
+  seeding = false;
+  const v1 = await deploy();
+  await sp.goto(SW_APP);
+  await sp.waitForSelector('#timeline article');
+  await until('the new worker takes over and drops v4', async () => (await cacheNames()).includes(`mastorss-${v1} http://localhost:8125/`)
+    && !(await cacheNames()).some((k) => k.startsWith('mastorss-v4')));
+  assert.ok(await whole(v1, await files()), 'the new version is cached whole');
+
+  // (b) A new version between two loads: the second load runs the new code,
+  // and the cache holds the new version alone.
+  const v2 = await deploy({ 'js/render.js': (t) => `${t}\nglobalThis.shellMark = 'v2';\n` });
+  const v2files = await files();
   await sp.reload();
   await sp.waitForSelector('#timeline article');
-  const cachedCss = async () => sp.evaluate(async () => (await (await caches.match(new URL('styles.css', location.href).href))?.text()) || '');
-  for (let i = 0; i < 20 && !(await cachedCss()).includes('deployed later'); i++) await sp.waitForTimeout(100);
-  assert.ok((await cachedCss()).includes('deployed later'), 'the cached shell follows the server after a normal load');
+  assert.equal(await sp.evaluate(() => globalThis.shellMark), 'v2', 'the new render.js runs');
+  await until('v2 replaces v1', async () => {
+    const names = await cacheNames();
+    return names.includes(`mastorss-${v2} http://localhost:8125/`) && !names.includes(`mastorss-${v1} http://localhost:8125/`);
+  });
+  assert.ok(await whole(v2, v2files), 'v2 is cached whole');
+  await sp.reload();
+  await sp.waitForSelector('#timeline article');
+  assert.equal(await sp.evaluate(() => globalThis.shellMark), 'v2');
+
+  // A start on a hung connection shows the reader from this version's cache
+  // after a short wait instead of keeping the spinner up, and says so in the log.
   shellDelay = 8000; // as good as hung
   const t0 = Date.now();
   await sp.reload({ waitUntil: 'commit' });
@@ -877,23 +943,56 @@ await ctx.close();
   await sp.click('#menu');
   await sp.click('#copy-diagnostics');
   let slowReport = await sp.evaluate(() => navigator.clipboard.readText());
-  for (let i = 0; i < 20 && !/from=skipped/.test(slowReport); i++) {
+  for (let i = 0; i < 20 && !/from=timeout/.test(slowReport); i++) {
     await sp.waitForTimeout(250);
     await sp.click('#copy-diagnostics');
     slowReport = await sp.evaluate(() => navigator.clipboard.readText());
   }
   assert.match(slowReport, / sw-fetch path=\/ at=[\d:.]+ sinceOriginMs=-?\d+ ms=1\d\d\d from=timeout/, 'the page timed out, from the cache');
-  assert.match(slowReport, / sw-fetch path=\/js\/app\.js .*from=skipped/, 'the rest straight from the cache');
   assert.match(slowReport, / ready screen=reader sinceOriginMs=\d+ /);
   assert.match(slowReport, / boot sinceOriginMs=\d+ origin=[\d:.]+ nav=reload sw=activated /);
   assert.match(slowReport, / nav workerStart=\d+ fetchStart=\d+ .*responseEnd=\d+ domInteractive=\d+ transferSize=0 /, 'the page came from the service worker');
-  assert.match(slowReport, / res why=\w+ n=\d+ all=.*\/js\/app\.js@\d+\+\d+ 0B/);
+  assert.match(slowReport, / res why=\w+ n=\d+ all=.*\/js\/app\.[0-9a-f]{10}\.js@\d+\+\d+ 0B/, 'the modules from the cache');
   assert.match(slowReport, /\/api\/me@\d+\+\d+/, 'API calls too, by path');
   assert.match(slowReport, /^heap: \d+ MB \(performance\.memory\)$/m, 'Chromium has performance.memory');
   assert.match(slowReport, /^serviceWorker: activated$/m);
   shellDelay = 0;
+  await sp.keyboard.press('Escape');
+
+  // (d) A new version whose install fails partway (one file answers 500):
+  // the worker before keeps its version whole and keeps serving it.
+  const v3 = await deploy({ 'icons/icon-512.png': (t) => `${t}x`, 'js/render.js': (t) => `${t}\nglobalThis.shellMark = 'v3';\n` });
+  failing = '/' + (await files()).find((f) => f.startsWith('icons/icon-512.'));
+  await sp.reload();
+  await sp.waitForSelector('#timeline article');
+  await sp.evaluate(async () => (await navigator.serviceWorker.getRegistration()).update().catch(() => {}));
+  await until('the failed install is given up', () => sp.evaluate(async () => {
+    const reg = await navigator.serviceWorker.getRegistration();
+    return !reg.installing && !reg.waiting;
+  }));
+  const names = await cacheNames();
+  assert.ok(!names.some((k) => k.startsWith(`mastorss-${v3}`)), 'nothing of the failed version is kept');
+  assert.ok(await whole(v2, v2files), 'v2 is still whole');
+  shellDelay = 8000;
+  await sp.reload({ waitUntil: 'commit' });
+  await sp.waitForSelector('#timeline article', { timeout: 6000 });
+  assert.equal(await sp.evaluate(() => globalThis.shellMark), 'v2', 'from the cache, all of v2');
+  shellDelay = 0;
+  failing = null;
+
+  // (c) The watchdog: an app.js that can't link shows a way out instead of a
+  // spinner, and Reset and reload boots once the files are right again.
+  await deploy({ 'js/api.js': (t) => t.replace('export function setLogger', 'function setLogger') });
+  await sp.reload();
+  await sp.waitForSelector('#boot.failed', { timeout: 9000 });
+  assert.match(await sp.textContent('#boot'), /Couldn't start the reader/);
+  const v5 = await deploy();
+  await sp.click('#boot button');
+  await sp.waitForSelector('#timeline article');
+  await until('a fresh worker for the fixed version', async () => (await cacheNames()).includes(`mastorss-${v5} http://localhost:8125/`));
   await sc.close();
   server.close();
+  await rm(work, { recursive: true, force: true });
 }
 
 // ---------------------------------------------------------------- staying signed in

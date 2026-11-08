@@ -35,11 +35,22 @@ the curator's `/api/` (see `../README.md`).
   back to the foreground, at the end of the page, and by pulling up.
 - **Updates**: the server's `version.json` is the deployed version; the app
   reloads itself when it changes.
-- **Offline and slow starts**: `sw.js` serves the app's own files from the
-  network, but from its cache if the network hasn't answered in 1.5 s (and
-  then for the rest of that start), refreshing the cache in the background.
-  Each start's timings (the page, each file, the server's `Server-Timing`,
-  what the service worker did) go in the diagnostics log; see `js/app.js`.
+- **One version at a time**: the curator serves every file but the page and
+  `sw.js` under a name carrying its content hash (`js/app.<hash>.js`, the
+  imports and `index.html` rewritten to match; `curator/shell.py`), so a page
+  only ever loads files of its own version, whatever a cache holds. The files
+  here keep their plain names. Each shell has a version id, written into
+  `sw.js` and given as `shell` in `version.json`: a new one is a new worker,
+  which caches all of that version's files or none, and drops the others.
+- **Offline and slow starts**: `sw.js` serves the hashed files from its cache,
+  and the page from the network, but from its cache if the network hasn't
+  answered in 1.5 s. Each start's timings (the page, each file, the server's
+  `Server-Timing`, what the service worker did) go in the diagnostics log;
+  see `js/app.js`.
+- **A start that fails**: if the app hasn't started within 8 s, or its files
+  fail to load, `js/boot.js` (a plain script, before the modules) replaces
+  the spinner with "Couldn't start the reader" and **Reset and reload**, which
+  drops the service worker and its caches.
 - **Dead connections**: every request has a timeout (10 s for reads, 20 s
   for writes and the token refresh). A read, or the position, is sent again
   once; other writes and the refresh token never are. A check that still
@@ -56,5 +67,8 @@ explained in the comments in `js/app.js`.
     npm install && npx playwright install chromium
     npm start &           # serves this folder on :8124
     npm test
+
+The service worker's part builds the shell with `python -m curator.shell`
+(the repo's `.venv`, or `CURATOR_PYTHON`).
 
 The end-to-end test fakes the sign-in provider and the curator API.

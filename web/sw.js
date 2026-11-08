@@ -1,40 +1,40 @@
-// Caches the app shell only. API responses always go to the network so the
-// timeline and read position are never stale.
+// The curator serves this file with two lines in front of it
+// (curator/shell.py): VERSION, the shell's version id, and FILES, every shell
+// file under its hashed name (`js/app.<hash>.js`). So each new shell is a new
+// worker, which caches that version's files as one, and a page only ever
+// gets files of its own version (#20).
+// API responses always go to the network so the timeline and read position
+// are never stale.
 // One cache per copy of the app: prod and test live on the same origin and
 // share Cache Storage, so each only manages caches for its own scope.
-const CACHE = `mastorss-v4 ${self.registration.scope}`;
+const CACHE = `mastorss-${VERSION} ${self.registration.scope}`;
 // What this worker noticed about its fetches, for the page's diagnostics log
-// (the page may not exist yet when they happen). Kept across cache versions.
+// (the page may not exist yet when they happen). Kept across versions.
 const LOG = `mastorss-swlog ${self.registration.scope}`;
 const LOG_MAX = 50;
-const SHELL = [
-  './',
-  './index.html',
-  './styles.css',
-  './js/app.js',
-  './js/api.js',
-  './js/render.js',
-  './js/profile.js',
-  './js/suggestions.js',
-  './manifest.webmanifest',
-  './icons/icon.svg',
-  './icons/icon-192.png',
-  './icons/icon-512.png',
-  './icons/apple-touch-icon.png',
-];
-// How long the shell waits on the network before using the cached copy.
+const PAGE = self.registration.scope; // index.html, as installed with this version
+const HASHED = new Set(FILES.map((f) => new URL(f, self.registration.scope).href));
+// How long a start waits on the network for the page before using the cached copy.
 const TIMEOUT_MS = 1500;
 const SLOW_MS = 1000; // network fetches slower than this are logged
 
+// All of this version's files or none: addAll fails if any one does, and the
+// worker before keeps serving its own version, whole. `reload` so no copy
+// from the HTTP cache is taken for the server's.
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  event.waitUntil(caches.open(CACHE)
+    .then((c) => c.addAll([PAGE, ...HASHED].map((url) => new Request(url, { cache: 'reload' }))))
+    .catch((err) => caches.delete(CACHE).then(() => { throw err; }))
+    .then(() => self.skipWaiting()));
 });
 
+// Every other version of this scope goes, the caches from before hashing
+// (mastorss-v1 to v4) among them.
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
       .then((keys) => Promise.all(keys
-        .filter((k) => k !== CACHE && k !== LOG && (k === 'mastorss-v1' || k.endsWith(` ${self.registration.scope}`)))
+        .filter((k) => k !== CACHE && k !== LOG && (k === 'mastorss-v1' || (k.startsWith('mastorss-') && k.endsWith(` ${self.registration.scope}`))))
         .map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   );
@@ -53,46 +53,53 @@ async function note(entry) {
   } catch {}
 }
 
-// Network first for the shell so deploys show up straight away, but only for
-// TIMEOUT_MS: after a cold start on a slow or hung connection the cached copy
-// is shown instead, and the network fetch finishes in the background to
-// refresh the cache. The shell loads in three rounds (the page, app.js, its
-// modules), so once one fetch has timed out the rest of that start comes
-// from the cache straight away. With nothing cached yet, wait for the network.
-const SKIP_MS = 30_000; // how long after a timeout to go straight to the cache
-let skipUntil = 0;
-
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'GET' || url.origin !== location.origin) return;
-  // The curator's own endpoints (API, feed, status page) always go to the network.
-  if (/^\/(api|f|agent|status|healthz|version\.json)(\/|$)/.test(url.pathname)) return;
-  const path = url.pathname;
+  if (event.request.mode === 'navigate') {
+    const { res, done } = page(event);
+    event.respondWith(res);
+    event.waitUntil(done); // its log entries
+  }
+  else if (HASHED.has(url.origin + url.pathname)) event.respondWith(hashed(event));
+  // Anything else (the API, config.json, a newer page's files) is the network's.
+});
+
+// A hashed file never changes, so this version's copy is always right. A miss
+// (only if the cache was cleared under us) goes to the network.
+async function hashed(event) {
+  const cached = await caches.match(event.request, { cacheName: CACHE });
+  if (cached) return cached;
+  event.waitUntil(note({ path: new URL(event.request.url).pathname, ms: 0, from: 'missing' }));
+  return fetch(event.request);
+}
+
+// The page names the files, so it comes from the network first (never from
+// the HTTP cache), but only for TIMEOUT_MS: after that, on a slow or hung
+// connection, this version's copy is shown instead. The cached copy is the
+// one installed with this version's files, never a newer one from the
+// network whose files this cache doesn't have.
+function page(event) {
+  const path = new URL(event.request.url).pathname;
   const started = Date.now();
-  const skipping = started < skipUntil;
-  const network = fetch(event.request).then((res) => {
-    const ms = Date.now() - started;
-    if (ms < SLOW_MS && !skipping) skipUntil = 0; // the network is back
-    // Cloned now, before the page starts reading the body.
-    const copy = res.ok ? res.clone() : null;
-    const saved = copy && caches.open(CACHE).then((c) => c.put(event.request, copy));
-    return { res, ms, done: Promise.all([saved, ms > SLOW_MS && note({ path, ms, from: 'network', status: res.status })]) };
-  });
-  // Keeps the worker alive until the fetch, its cache copy and its log entry are done.
-  event.waitUntil(network.then((r) => r.done, () => note({ path, ms: Date.now() - started, from: 'failed' })).catch(() => {}));
-  event.respondWith((async () => {
-    const first = skipping ? 'skipped' : await Promise.race([
+  const network = fetch(event.request, { cache: 'no-cache' });
+  const done = network.then(
+    (r) => Date.now() - started > SLOW_MS && note({ path, ms: Date.now() - started, from: 'network', status: r.status }),
+    () => note({ path, ms: Date.now() - started, from: 'failed' }),
+  );
+  const res = (async () => {
+    const first = await Promise.race([
       network.then(() => 'network', () => 'cache'),
       new Promise((resolve) => setTimeout(resolve, TIMEOUT_MS, 'timeout')),
     ]);
     if (first !== 'network') {
-      const cached = await caches.match(event.request, { ignoreSearch: true });
+      const cached = await caches.match(PAGE, { cacheName: CACHE });
       if (cached) {
-        if (first === 'timeout') skipUntil = Date.now() + SKIP_MS;
-        event.waitUntil(note({ path, ms: Date.now() - started, from: first }));
+        await note({ path, ms: Date.now() - started, from: first });
         return cached;
       }
     }
-    return (await network).res; // rejects if the network failed and nothing is cached
-  })());
-});
+    return network; // rejects if the network failed and nothing is cached
+  })();
+  return { res, done: Promise.all([done, res.catch(() => {})]) };
+}

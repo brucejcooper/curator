@@ -3,6 +3,9 @@ import { runOnboarding, showProfile } from './profile.js';
 import { el, renderCurated, renderStatus, safariUrl } from './render.js';
 import { showSuggestions } from './suggestions.js';
 
+// For the boot watchdog (js/boot.js): every module loaded and linked.
+window.readerStarted = true;
+
 // The reader: the stories the curator picked, read oldest to newest from
 // where you left off. Your Mastodon home timeline is just another source.
 // Everything comes from the curator this page is served by; the app never
@@ -257,10 +260,36 @@ async function reload() {
   location.reload();
 }
 
+// Onto a new version: give its service worker a few seconds to install and
+// take over first, so the reload is served from the new version's cache. Only
+// for speed: a page only ever loads its own version's files (hashed names,
+// curator/shell.py), whichever worker serves them.
+const WORKER_WAIT_MS = 5000;
+async function update() {
+  const reg = await navigator.serviceWorker?.getRegistration().catch(() => null);
+  if (reg) {
+    await Promise.race([
+      (async () => {
+        await reg.update().catch(() => {});
+        const w = reg.installing || reg.waiting;
+        if (!w) return;
+        await new Promise((resolve) => {
+          const settled = () => ['activated', 'redundant'].includes(w.state) && resolve();
+          w.addEventListener('statechange', settled);
+          settled();
+        });
+      })(),
+      new Promise((resolve) => setTimeout(resolve, WORKER_WAIT_MS)),
+    ]);
+  }
+  await reload();
+}
+
 const UPDATE_CHECK_MS = 30 * 60_000;
 const VERSION_TIMEOUT_MS = 10_000;
 let loadedVersion = null;
 let loadedBuilt = null;
+let loadedShell = null; // the shell's version id: a deploy may change only that
 
 async function fetchVersion() {
   try {
@@ -280,14 +309,17 @@ function busy() {
   return !!document.querySelector('dialog[open]') || !!document.querySelector('.overlay:not([hidden])');
 }
 
+const isNewer = (v) => !!v?.version && (v.version !== loadedVersion || (!!v.shell && !!loadedShell && v.shell !== loadedShell));
+
 async function checkForUpdate() {
   if (!loadedVersion || document.visibilityState !== 'visible') return;
-  const latest = (await fetchVersion())?.version;
-  if (!latest || latest === loadedVersion) return;
+  const v = await fetchVersion();
+  if (!isNewer(v)) return;
+  const latest = v.version;
   if (!busy()) {
     diag.log('update-reload', { from: loadedVersion.slice(0, 7), to: latest.slice(0, 7) });
     diag.save();
-    await reload();
+    await update();
     return;
   }
   diag.log('update-available', { to: latest.slice(0, 7) });
@@ -298,9 +330,10 @@ async function watchForUpdates() {
   const v = await fetchVersion();
   loadedVersion = v?.version ?? null;
   loadedBuilt = v?.built ?? null;
+  loadedShell = v?.shell ?? null;
   diag.log('version', { version: loadedVersion?.slice(0, 7) ?? 'dev' });
   if (!loadedVersion) return;
-  $('#update-reload').onclick = reload;
+  $('#update-reload').onclick = update;
   document.addEventListener('visibilitychange', checkForUpdate);
   setInterval(checkForUpdate, UPDATE_CHECK_MS);
 }
@@ -1200,10 +1233,10 @@ class Reader {
     $('#copy-diagnostics').onclick = () => this.copyDiagnostics();
     $('#app-version').textContent = versionLabel();
     $('#check-update').onclick = async () => {
-      const latest = (await fetchVersion())?.version;
-      if (!latest) $('#app-version').textContent = `${versionLabel()} · couldn't check`;
-      else if (latest === loadedVersion) $('#app-version').textContent = `${versionLabel()} · up to date`;
-      else reload(); // your place is saved, so this lands where you were
+      const v = await fetchVersion();
+      if (!v?.version) $('#app-version').textContent = `${versionLabel()} · couldn't check`;
+      else if (!isNewer(v)) $('#app-version').textContent = `${versionLabel()} · up to date`;
+      else update(); // your place is saved, so this lands where you were
     };
     $('#position-info').textContent = this.position ? `Read up to ${this.position}` : 'No position saved yet';
     $('#mark-all').onclick = async () => {
@@ -1255,7 +1288,7 @@ class Reader {
 // ---------------------------------------------------------------- boot
 
 async function boot() {
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).catch(() => {});
   watchForUpdates();
 
   const params = new URLSearchParams(location.search);
