@@ -71,6 +71,15 @@ def test_a_change_renames_the_file_and_everything_importing_it(web):
     assert shell.build(web).version == after.version  # the same files, the same id
 
 
+def test_a_change_to_the_worker_alone_is_a_new_version(web):
+    before = shell.build(web)
+    (web / "sw.js").write_text((web / "sw.js").read_text() + "\n// changed\n")
+    after = shell.build(web)
+    assert before.names == after.names
+    assert before.version != after.version  # a new cache name: a failed install can't delete the live one (#22)
+    assert shell.build(web).version == after.version
+
+
 def test_the_worker_carries_the_version_and_every_file():
     built = shell.build(server.WEB)
     sw = client_for(built).get("/sw.js")

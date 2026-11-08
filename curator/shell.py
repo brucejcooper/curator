@@ -101,10 +101,12 @@ def build(web: Path) -> Shell:
         served["manifest.webmanifest"], names["manifest.webmanifest"] = body, hashed_name("manifest.webmanifest", body)
 
     index = INDEX_REF.sub(lambda m: m[1] + names.get(m[2], m[2]) + m[3], (web / "index.html").read_text()).encode()
-    version = digest(json.dumps([sorted(names.items()), digest(index)]).encode())
+    worker = (web / "sw.js").read_bytes()
+    # The worker's own bytes too: a sw.js-only change must not reuse the live version's cache name (#22).
+    version = digest(json.dumps([sorted(names.items()), digest(index), digest(worker)]).encode())
     head = (f"const VERSION = {json.dumps(version)};\n"
             f"const FILES = {json.dumps(sorted(names.values()))};\n")
-    sw = head.encode() + (web / "sw.js").read_bytes()
+    sw = head.encode() + worker
     return Shell(version=version, names=names, plain={**served, "index.html": index, "sw.js": sw},
                  hashed={names[n]: served[n] for n in names})
 
