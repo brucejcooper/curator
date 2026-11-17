@@ -90,6 +90,38 @@ def sponsored_label(e) -> str | None:
     return None
 
 
+# Paid promotion its source doesn't label: an opening paragraph that says who
+# pays for it. "Apple @ Work is exclusively brought to you by Mosyle" is a
+# sponsored column (dropped); "9to5Mac is brought to you by Tello Mobile" is
+# a sponsor of the whole site, on an ordinary article (kept, without that
+# paragraph). The feed's own name tells them apart. Only the first paragraph
+# counts: "brought to you by" further down, or quoted, is the article's own.
+SPONSOR_LINE = re.compile(r"(?P<series>[^\s.!?:;][^\n.!?:;]{0,60}?)\s+is\s+(?:exclusively\s+)?"
+                          r"(?:brought\s+to\s+you|sponsored|presented)\s+by\b", re.I)
+PARAGRAPH = re.compile(r"<p\b[^>]*>.*?</p>", re.I | re.S)
+
+
+def sponsor_line(text: str) -> str | None:
+    """The series whose sponsor the text's first paragraph names, or None."""
+    m = SPONSOR_LINE.match((text or "").strip().split("\n\n", 1)[0])
+    return m.group("series").strip() if m and len(m.group("series").split()) <= 6 else None
+
+
+def same_name(a: str, b: str) -> bool:
+    key = lambda s: re.sub(r"[\W_]+", "", (s or "").lower())
+    return bool(key(a)) and key(a) == key(b)
+
+
+def without_sponsor_line(html: str) -> str:
+    """The HTML without its opening paragraph, if that's a sponsor line."""
+    for m in PARAGRAPH.finditer(html):
+        if plain(m.group(0)):
+            if not plain(html[: m.start()]) and sponsor_line(plain(m.group(0))):
+                return html[: m.start()] + html[m.end():]
+            break
+    return html
+
+
 # ── RSS / Atom ───────────────────────────────────────────────────────────────
 # Each feed is fetched as often as it changes, within the fast loop: about
 # half the usual gap between its entries, between one cycle and FEED_CEILING.
@@ -248,7 +280,7 @@ def parse_feed(content: bytes, name: str, always_show: bool = False, max_age: ti
 
 
 def feed_items(parsed, name: str, always_show: bool = False, max_age: timedelta = MAX_AGE) -> list[dict]:
-    items = []
+    items, site = [], parsed.feed.get("title") or ""
     for e in parsed.entries:
         link = e.get("link")
         if not link:
@@ -257,11 +289,17 @@ def feed_items(parsed, name: str, always_show: bool = False, max_age: timedelta 
         if now() - published > max_age:
             continue
         summary = e.get("summary") or (e.get("content") or [{}])[0].get("value", "")
+        reason = sponsored_label(e)
+        if series := sponsor_line(plain(summary)):
+            if same_name(series, site) or same_name(series, name):
+                summary = without_sponsor_line(summary)
+            else:
+                reason = reason or f'column "{series}"'
         it = item(link, e.get("title", link), hover_text(summary), f"rss:{name}", e.get("author"),
                   published, always_show, rss_image(e))
         # Dropped even from an always-show feed: the reader chose the feed,
         # nobody chose its paid posts.
-        if reason := sponsored_label(e):
+        if reason:
             it["rule"] = f"sponsored ({reason})"
         items.append(it)
     return items

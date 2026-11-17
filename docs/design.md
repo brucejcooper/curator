@@ -82,7 +82,10 @@ picks what each reader would want, learning from what they actually read.
    other. `/status` counts the items put in a story by a link and the leads
    the rule decided.
 4. **Judge**, cheapest first. Rules for everyone (not English, hashtag soup,
-   labelled sponsored by its source).
+   labelled sponsored by its source, or a sponsored column: its opening
+   paragraph says "Apple @ Work is brought to you by Mosyle"). A sponsor of
+   the whole site ("9to5Mac is brought to you by …") doesn't make an
+   article paid for: that paragraph is only cut from its text.
    Then the item's **traits**, asked once for everyone: how significant it
    is as news, whether it's a news report, rage bait, an advert, hype,
    personal chatter or a template how-to, and whether it's paid-for

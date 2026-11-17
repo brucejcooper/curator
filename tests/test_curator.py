@@ -460,6 +460,83 @@ def test_a_sponsored_post_is_kept_but_never_published(alex, db, monkeypatch):
     assert [s["title"] for s in select(db, alex)] == [NEWS[0]]
 
 
+# As 9to5Mac's feed has them (trimmed): a picture, then the sponsor's italic paragraph.
+FEAT = '<div class="feat-image"><img src="https://9to5mac.com/wp-content/uploads/a.jpg?w=1600" /></div>'
+APPLE_AT_WORK = (FEAT + '<p class="wp-block-paragraph"><em><a href="https://mosyle.net/3RDn" target="_blank" '
+                 'rel="noreferrer noopener">Apple @ Work is exclusively brought to you by Mosyle</a>, the only Apple Unified '
+                 'Platform. Over 45,000 organizations trust Mosyle.&nbsp;<a href="https://mosyle.net/3RDn">Request your '
+                 'EXTENDED TRIAL</a>&nbsp;today.</em></p><p class="wp-block-paragraph">Mac admins are shipping AI-written code.</p>')
+SECURITY_BITE = (FEAT + '<p class="wp-block-paragraph"><em>9to5Mac Security Bite is exclusively brought to you by&nbsp;</em>'
+                 '<a href="https://mosyle.net/87PQ" target="_blank" rel="noreferrer noopener"><strong>Mosyle, the only Apple '
+                 'Unified Platform</strong>.</a>&nbsp;<em>Making Apple devices work-ready is all we do.</em></p>'
+                 '<p class="wp-block-paragraph">Apple details Secure Exclaves.</p>')
+TELLO = (FEAT + '<p class="wp-block-paragraph"><em>9to5Mac is brought to you by Tello Mobile. Switching to <a '
+         'href="https://www.anrdoezrs.net/click-5527864-12834157" target="_blank" rel="noreferrer noopener sponsored nofollow">'
+         'Tello Mobile</a> can bring the cost of your plan down to as little as $5 a month.</em></p>'
+         '<p class="wp-block-paragraph">Messages has had a big year.</p><p>Here are my favorites.</p>')
+PLAIN_NEWS = FEAT + '<p class="wp-block-paragraph">Apple released iOS 27.2 today.</p><p>It fixes the camera bug.</p>'
+LATER = (FEAT + '<p>Listen to a recap of the top stories of the day from 9to5Mac.</p>'
+         '<p><em>9to5Mac Daily is brought to you by Backblaze: back up your Mac.</em></p>')
+
+
+def nine_to_five_text(*descriptions, site="9to5Mac") -> bytes:
+    """A 9to5Mac-shaped feed of staff-written news items with these descriptions."""
+    from email.utils import format_datetime
+
+    when = format_datetime(datetime.now(timezone.utc))
+    items = "".join(f"""<item><title>Item {n}</title><link>https://9to5mac.com/2026/11/14/{n}/</link>
+      <dc:creator><![CDATA[Bradley C]]></dc:creator><pubDate>{when}</pubDate><category><![CDATA[News]]></category>
+      <description><![CDATA[{d}]]></description></item>""" for n, d in enumerate(descriptions))
+    return f"""<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+      <channel><title>{site}</title><link>https://9to5mac.com</link>{items}</channel></rss>""".encode()
+
+
+def test_sponsored_columns_are_dropped_and_site_sponsor_lines_cut():
+    from curator.collect import parse_feed
+
+    work, bite, tello, news, later = parse_feed(nine_to_five_text(APPLE_AT_WORK, SECURITY_BITE, TELLO, PLAIN_NEWS, LATER), "9to5Mac")
+    assert work["rule"] == 'sponsored (column "Apple @ Work")'
+    assert bite["rule"] == 'sponsored (column "9to5Mac Security Bite")'
+    # The site's own sponsor: the article stays, without the advert.
+    assert tello.get("rule") is None
+    assert tello["summary"] == "Messages has had a big year.\n\nHere are my favorites."
+    # Neither: untouched, and so is a sponsor named further down.
+    assert news.get("rule") is None and news["summary"] == "Apple released iOS 27.2 today.\n\nIt fixes the camera bug."
+    assert later.get("rule") is None and later["summary"].endswith("9to5Mac Daily is brought to you by Backblaze: back up your Mac.")
+    # Any site of the kind, by its own name (or the name its reader gave it).
+    google = lambda d: d.replace("9to5Mac", "9to5Google").replace("Apple @ Work", "Android @ Work")
+    work, bite, tello = parse_feed(nine_to_five_text(*map(google, (APPLE_AT_WORK, SECURITY_BITE, TELLO)), site="9to5Google"), "Google news")
+    assert [it.get("rule") for it in (work, bite, tello)] == [
+        'sponsored (column "Android @ Work")', 'sponsored (column "9to5Google Security Bite")', None]
+    assert tello["summary"].startswith("Messages has had")
+    (tello,) = parse_feed(nine_to_five_text(TELLO, site=""), "9to5 mac")
+    assert tello.get("rule") is None and tello["summary"].startswith("Messages has had")
+    # Even from a feed the reader always sees in full.
+    (always,) = parse_feed(nine_to_five_text(APPLE_AT_WORK), "9to5Mac", always_show=True)
+    assert always["rule"] == 'sponsored (column "Apple @ Work")'
+
+
+def test_sponsored_columns_collected_before_are_dropped_on_upgrade(db):
+    from curator import store
+
+    stored = {
+        "work": ("rss:9to5Mac", "Apple @ Work is exclusively brought to you by Mosyle, the only Apple Unified Platform.\n\nMac admins…"),
+        "bite": ("rss:9to5Mac", "9to5Mac Security Bite is exclusively brought to you by Mosyle, the only Apple Unified Platform."),
+        "tello": ("rss:9to5Mac", "9to5Mac is brought to you by Tello Mobile. Switching to Tello Mobile…\n\nMessages has had a big year."),
+        "memoket": ("rss:9to5Mac", "9to5Mac is brought to you by Memoket: Memoket Gem is a 0.4 oz AI wearable.\n\nSiri is catching up."),
+        "daily": ("rss:9to5Mac", "Listen to a recap of the day.\n\nSponsored by Backblaze: Backup your Mac."),
+        "toot": ("mastodon:#apple", "Apple @ Work is brought to you by Mosyle, apparently"),
+    }
+    for id_, (source, summary) in stored.items():
+        add_story(db, id_, source, 0.9)
+        db.execute("UPDATE items SET summary = ? WHERE id = ?", (summary, id_))
+    store.migrate(db)
+    store.migrate(db)  # twice changes nothing
+    rules = dict(db.execute("SELECT id, rule FROM items").fetchall())
+    assert rules == {"work": 'sponsored (column "Apple @ Work")', "bite": 'sponsored (column "9to5Mac Security Bite")',
+                     "tello": None, "memoket": None, "daily": None, "toot": None}
+
+
 def test_items_collected_before_are_dropped_on_upgrade(db):
     from curator import store
 

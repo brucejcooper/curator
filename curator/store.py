@@ -177,6 +177,15 @@ def migrate(conn: sqlite3.Connection) -> None:
 
         conn.execute(f"""UPDATE items SET rule = 'sponsored (author "' || trim(author) || '")'
                          WHERE rule IS NULL AND lower(trim(author)) IN ({','.join('?' * len(SPONSORED))})""", sorted(SPONSORED))
+        # And sponsored columns (collect.sponsor_line); a site's own sponsor
+        # line on an ordinary article leaves it be.
+        from curator.collect import same_name, sponsor_line
+
+        for id_, source, summary in conn.execute(
+                """SELECT id, source, summary FROM items WHERE rule IS NULL AND source LIKE 'rss:%'
+                   AND (summary LIKE '%brought to you by%' OR summary LIKE '%sponsored by%' OR summary LIKE '%presented by%')""").fetchall():
+            if (series := sponsor_line(summary)) and not same_name(series, source.removeprefix("rss:")):
+                conn.execute("UPDATE items SET rule = ? WHERE id = ?", (f'sponsored (column "{series}")', id_))
         # Your own home timeline is a per-reader source now.
         conn.execute("UPDATE items SET source = ? WHERE source = 'mastodon:home'", (f"mastodon:home:{OWNER}",))
     if "sightings" in tables:
