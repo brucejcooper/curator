@@ -34,7 +34,7 @@ import numpy as np
 import yaml
 
 from curator import people, store
-from curator.collect import UA, from_bsky, from_status, mastodon_client, parse_feed
+from curator.collect import UA, from_bsky, from_status, json_feed, mastodon_client, parse_any, parse_feed
 from curator.config import OWNER
 from curator.judge import jev_score
 from curator.people import Profile, source_key
@@ -237,26 +237,28 @@ def from_web(profile: Profile, skip: list[str]) -> list[dict]:
 
 # ── Turning a candidate into a source, with a sample of its items ───────────
 
-FEED_LINK = re.compile(r'<link\b[^>]*type=["\']application/(?:rss|atom)\+xml["\'][^>]*>', re.I)
+FEED_LINK = re.compile(r'<link\b[^>]*type=["\']application/(?:rss\+xml|atom\+xml|feed\+json)["\'][^>]*>', re.I)
 HREF = re.compile(r'href=["\']([^"\']+)["\']', re.I)
 
 
 def find_feed(http: httpx.Client, site: str) -> str | None:
-    """A site's feed: its advertised RSS/Atom link, else a few usual places."""
+    """A site's feed: its advertised RSS/Atom/JSON Feed link, else a few usual places."""
     base = site if site.startswith("http") else f"https://{site}/"
     try:
         page = http.get(base, follow_redirects=True)
         if page.is_success and "xml" in page.headers.get("content-type", "") and b"<item" in page.content[:20000] + b"<entry":
+            return str(page.url)
+        if page.is_success and json_feed(page.content) is not None:
             return str(page.url)
         for tag in FEED_LINK.findall(page.text if page.is_success else ""):
             if m := HREF.search(tag):
                 return urljoin(str(page.url), m.group(1))
     except httpx.HTTPError:
         return None
-    for path in ("feed", "rss", "feed.xml", "rss.xml", "index.xml", "atom.xml"):
+    for path in ("feed", "rss", "feed.xml", "rss.xml", "index.xml", "atom.xml", "feed.json"):
         try:
             r = http.get(urljoin(base, path), follow_redirects=True)
-            if r.is_success and re.search(rb"<(rss|feed)\b", r.content[:2000]):
+            if r.is_success and (re.search(rb"<(rss|feed)\b", r.content[:2000]) or json_feed(r.content) is not None):
                 return str(r.url)
         except httpx.HTTPError:
             continue
@@ -275,10 +277,9 @@ def resolve(conn, http: httpx.Client, owner_http: httpx.Client | None, c: dict) 
                 return None
             resp = http.get(url, follow_redirects=True)
             resp.raise_for_status()
-            import feedparser
-
-            name = c.get("name") if kind == "rss" else (feedparser.parse(resp.content).feed.get("title") or host(url))
-            items = recent(parse_feed(resp.content, name or url, max_age=SAMPLE_AGE))
+            ctype = resp.headers.get("content-type")
+            name = c.get("name") if kind == "rss" else (parse_any(resp.content, ctype).feed.get("title") or host(url))
+            items = recent(parse_feed(resp.content, name or url, max_age=SAMPLE_AGE, content_type=ctype))
             return {"kind": "rss", "value": url, "name": name or url, "items": items}
         if kind == "mastodon_account" and owner_http:
             acct = value.lstrip("@")

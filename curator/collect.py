@@ -4,6 +4,8 @@ sources (each fetched once), and each connected reader's own Mastodon home
 timeline. The hashtags and home timelines also arrive in real time
 (social.py), which shares the Mastodon and Bluesky code here."""
 
+import html
+import json
 import logging
 import math
 import re
@@ -242,20 +244,21 @@ def due(state: dict, now_: datetime) -> bool:
 
 def rss(conn, http: httpx.Client, feed: dict, now_: datetime | None = None) -> list[dict]:
     """Conditional GET with the feed's last ETag / Last-Modified; schedules
-    its next fetch, whatever the answer."""
+    its next fetch, whatever the answer, and notes whether it has moved or
+    gone (upkeep)."""
     key = f"rss:{feed['url']}"
     state = store.get(conn, key, {})
     now_ = now_ or now()
     headers = {k: v for k, v in (("If-None-Match", state.get("etag")), ("If-Modified-Since", state.get("modified"))) if v}
-    items, status, resp_headers, dates, marker, ttl = [], None, {}, None, None, None
+    items, status, resp_headers, dates, marker, ttl, gone = [], None, {}, None, None, None, None
     try:
         resp = http.get(feed["url"], headers=headers, follow_redirects=True)
         status, resp_headers = resp.status_code, resp.headers
         if resp.is_success:  # a 203 from a proxy is a feed too
             status = 200
-            parsed = feedparser.parse(resp.content)
-            if parsed.bozo and not parsed.entries:
-                status = None
+            parsed = parse_any(resp.content, resp.headers.get("content-type"))
+            if (parsed.bozo or not parsed.get("version")) and not parsed.entries:  # an HTML page has none
+                status, gone = None, "not a feed"
                 raise ValueError(f"not a feed: {parsed.get('bozo_exception')}")
             state.update(etag=resp.headers.get("etag"), modified=resp.headers.get("last-modified"))
             dates = [d for e in parsed.entries if (d := entry_date(e)) and d <= now_ + timedelta(days=1)]
@@ -264,12 +267,50 @@ def rss(conn, http: httpx.Client, feed: dict, now_: datetime | None = None) -> l
             ttl = parsed.feed.get("ttl")
             items = feed_items(parsed, feed["name"], feed.get("always_show", False))
         elif status != 304:
+            gone = str(status) if status in (404, 410) else None
             resp.raise_for_status()  # 1xx, 3xx and errors
+        state = upkeep(state, resp, gone, now_)
     finally:
         # The error still goes up, to be logged; the feed waits longer.
+        if gone:
+            state = upkeep(state, None, gone, now_)
         store.put(conn, key, {**schedule(state, status, resp_headers, dates, marker, ttl, now_), "name": feed["name"]})
         conn.commit()  # don't hold the write lock across the next fetch
     return items
+
+
+# Upkeep of a feed's address. A feed that answers only through permanent
+# redirects (301/308) has moved: `moved_to` is where, since `moved_since`
+# (/status shows it; the daily revision rewrites a learned source once it
+# has stood for MOVE_SETTLED). It is still fetched at the profile's address,
+# so its state stays under that key until then. A feed that answers 404, 410
+# or something that isn't a feed is `failing` since `failing_since`; /status
+# flags it after DEAD_AFTER. Other errors (5xx, timeouts) pass, and don't
+# start the clock; any answer clears it.
+PERMANENT = (301, 308)
+MOVE_SETTLED = timedelta(days=7)
+DEAD_AFTER = timedelta(days=7)
+UPKEEP = ("moved_to", "moved_since", "failing", "failing_since")
+
+
+def upkeep(state: dict, resp: httpx.Response | None, gone: str | None, now_: datetime) -> dict:
+    """The feed's state after an answer (`resp`, a 200 or 304) or a sign it
+    has gone (`gone`: "404", "410" or "not a feed")."""
+    state = dict(state)
+    if gone:
+        state.setdefault("failing_since", iso(now_))
+        state["failing"] = gone
+        return state
+    state.pop("failing_since", None)
+    state.pop("failing", None)
+    hops = [r.status_code for r in resp.history]
+    if hops and all(h in PERMANENT for h in hops):
+        if state.get("moved_to") != str(resp.url):
+            state.update(moved_to=str(resp.url), moved_since=iso(now_))
+    else:
+        state.pop("moved_to", None)
+        state.pop("moved_since", None)
+    return state
 
 
 def entry_date(e) -> datetime | None:
@@ -277,8 +318,65 @@ def entry_date(e) -> datetime | None:
     return datetime(*stamp[:6], tzinfo=timezone.utc) if stamp else None
 
 
-def parse_feed(content: bytes, name: str, always_show: bool = False, max_age: timedelta = MAX_AGE) -> list[dict]:
-    return feed_items(feedparser.parse(content), name, always_show, max_age)
+def parse_feed(content: bytes, name: str, always_show: bool = False, max_age: timedelta = MAX_AGE,
+               content_type: str | None = None) -> list[dict]:
+    return feed_items(parse_any(content, content_type), name, always_show, max_age)
+
+
+# ── JSON Feed ────────────────────────────────────────────────────────────────
+# feedparser reads no JSON Feed (https://jsonfeed.org, 1.0 and 1.1), so it's
+# read here, into the shape feedparser gives the rest of this module.
+JSON_TYPES = ("application/feed+json", "application/json")
+JSON_FEED = "https://jsonfeed.org/version/"
+
+
+def parse_any(content: bytes, content_type: str | None = None):
+    """A feed, RSS, Atom or JSON Feed, as feedparser shapes it. JSON Feed by
+    its content type or, served as anything, by its opening brace."""
+    as_json = (content_type or "").split(";")[0].strip().lower() in JSON_TYPES
+    if as_json or content.lstrip()[:1] == b"{":
+        if (parsed := json_feed(content)) is not None:
+            return parsed
+        if as_json:
+            return feedparser.FeedParserDict(feed={}, entries=[], bozo=True, bozo_exception="not a JSON Feed")
+    return feedparser.parse(content)
+
+
+def json_date(value) -> tuple | None:
+    try:
+        dt = datetime.fromisoformat(str(value).strip())
+    except ValueError:
+        return None
+    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).astimezone(timezone.utc).timetuple()
+
+
+def json_feed(content: bytes):
+    """A JSON Feed document, or None if it isn't one."""
+    try:
+        doc = json.loads(content)
+    except ValueError:
+        return None
+    if not isinstance(doc, dict) or not str(doc.get("version", "")).startswith(JSON_FEED):
+        return None
+    entries = []
+    for i in doc.get("items") or []:
+        if not isinstance(i, dict):
+            continue
+        authors = i.get("authors") if isinstance(i.get("authors"), list) else []
+        author = (authors or [i.get("author")])[0]  # 1.1, else 1.0
+        text = i.get("content_text")
+        image = i.get("image") or i.get("banner_image")
+        entry = dict(
+            id=str(i.get("id") or ""), link=i.get("url") or i.get("external_url"), title=i.get("title"),
+            summary=i.get("content_html") or i.get("summary") or (html.escape(text) if text else None),
+            published_parsed=json_date(i.get("date_published")), updated_parsed=json_date(i.get("date_modified")),
+            author=author.get("name") if isinstance(author, dict) else None,
+            tags=[{"term": str(t)} for t in i.get("tags") or []],
+            media_thumbnail=[{"url": image}] if isinstance(image, str) else None,
+        )
+        entries.append(feedparser.FeedParserDict({k: v for k, v in entry.items() if v}))
+    return feedparser.FeedParserDict(feed=feedparser.FeedParserDict(title=doc.get("title") or "", ttl=None),
+                                     entries=entries, bozo=False, version="json")
 
 
 def feed_items(parsed, name: str, always_show: bool = False, max_age: timedelta = MAX_AGE) -> list[dict]:

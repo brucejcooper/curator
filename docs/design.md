@@ -9,7 +9,8 @@ picks what each reader would want, learning from what they actually read.
 **The fast loop** runs every 15 minutes:
 
 1. **Collect** from every reader's sources at once (each fetched once,
-   however many readers follow it): RSS/Atom feeds, Instagram, and the
+   however many readers follow it): RSS, Atom and JSON Feed feeds
+   (feedparser reads no JSON Feed, so curator reads it itself), Instagram, and the
    Mastodon and Bluesky people readers follow. Mastodon and Bluesky
    hashtags and each connected reader's own Mastodon home timeline arrive
    in real time instead (see *Social, in real time* below); the loop polls a
@@ -35,6 +36,15 @@ picks what each reader would want, learning from what they actually read.
    conditional (ETag, Last-Modified). `/status` lists each feed's interval,
    next fetch, last answer and what set it; `last_cycle` counts the feeds
    fetched and skipped.
+   A feed is still fetched at its profile address, redirects followed, but
+   its upkeep is noted: one that answers only through permanent redirects
+   (301/308) has moved, and `/status` says where to; the daily revision
+   rewrites a learned source that has moved for a week (its fetch state
+   goes with it), while a fixed one, the reader's own, is only flagged. A
+   feed that answers 404, 410 or something that isn't a feed for over a
+   week is flagged "dead?" at the top of `/status`; it keeps its capped
+   daily retries and nothing is removed. Other errors (5xx, timeouts) are
+   passing and don't count.
    A feed item that comes with no text of its own (Hacker News' is just
    links and points) or only a teaser ("… more…", "[…]") gets the
    article's first few paragraphs and picture, fetched once when it's new;
@@ -170,7 +180,7 @@ sources each reader doesn't have yet, from three places:
 
 - **Their signals**: outlets that covered stories they liked (another
   reader's feed for that outlet, or the site's own feed, found by
-  autodiscovery), sites whose articles they opened from posts, and people
+  autodiscovery of RSS, Atom or JSON Feed, or in its usual places), sites whose articles they opened from posts, and people
   whose posts they liked more than once.
 - **Their browsing**: sites where the Mac agent saw them read articles on
   at least four days of the last month (article pages only, so dashboards,

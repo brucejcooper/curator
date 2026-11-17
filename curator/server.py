@@ -30,7 +30,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from curator import follow, instagram, mastodon_connect, people, reader, shell, store
 from curator.auth import User, user_from_token
-from curator.collect import shared_sources
+from curator.collect import DEAD_AFTER, shared_sources
 from curator.config import PUBLIC_URL
 from curator.people import Profile
 from curator.publish import feed_folder
@@ -501,18 +501,23 @@ def social_tables(social) -> str:
 
 def feed_rows(conn) -> str:
     """Everyone's feeds, soonest fetch first: how often each is fetched, when
-    next, what it last answered, and what set the time."""
+    next, what it last answered, and what set the time. Feeds that look dead
+    (404, 410 or not a feed for DEAD_AFTER) come first; moved ones say where."""
     everyone = [p for u in people.readers(conn) if (p := people.profile(conn, u))]
     now = datetime.now(timezone.utc)
+    dead = lambda s: bool(s.get("failing_since")) and now - datetime.fromisoformat(s["failing_since"]) > DEAD_AFTER
     feeds = sorted(((f, store.get(conn, f"rss:{f['url']}", {})) for f in shared_sources(everyone)["rss"]),
-                   key=lambda fs: (fs[1].get("next") or "", fs[0]["name"]))
+                   key=lambda fs: (not dead(fs[1]), fs[1].get("next") or "", fs[0]["name"]))
     rows = []
     for f, s in feeds:
         nxt = datetime.fromisoformat(s["next"]) if s.get("next") else None
         when = (f"{nxt.astimezone():%a %H:%M} (in {span(max((nxt - now).total_seconds(), 0))})" if nxt else "next cycle")
         cells = [span(s["interval"]) if s.get("interval") else "", when,
                  s.get("last", "") + (f" ×{s['errors']}" if s.get("errors") else ""), s.get("reason", "new")]
-        rows.append(f'<tr><th title="{html.escape(f["url"])}">{html.escape(f["name"])}</th>'
+        notes = ([f"dead? {s.get('failing', 'failing')} since {datetime.fromisoformat(s['failing_since']).astimezone():%-d %b}"]
+                 if dead(s) else []) + ([f"moved → {s['moved_to']}"] if s.get("moved_to") else [])
+        rows.append(f'<tr><th title="{html.escape(f["url"])}">{html.escape(f["name"])}'
+                    + "".join(f"<br><small>{html.escape(n)}</small>" for n in notes) + "</th>"
                     + "".join(f"<td>{html.escape(c)}</td>" for c in cells) + "</tr>")
     return "".join(rows)
 

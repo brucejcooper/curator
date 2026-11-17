@@ -12,14 +12,14 @@ import argparse
 import json
 import os
 import sys
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 
 import anthropic
 import yaml
 from pydantic import BaseModel, Field
 
-from curator import people, store
+from curator import collect, people, store
 from curator.catalogue import CATALOGUE
 from curator.mastodon import Mastodon
 from curator.secrets import get_secret
@@ -152,6 +152,23 @@ def render_questions(questions: list[JevQuestion]) -> str:
     return QUESTIONS_HEADER + "\n".join(blocks)
 
 
+def follow_moves(conn, learned: list[LearnedSource], dry_run: bool = False) -> list[str]:
+    """Learned feeds that have answered only through permanent redirects for
+    collect.MOVE_SETTLED take their new address, here rather than by Claude,
+    and their fetch state (schedule, ETag) goes with them. Fixed sources are
+    the reader's own: /status only flags them. Returns "old → new" for each."""
+    moves = []
+    for source in learned:
+        state = store.get(conn, f"rss:{source.value}", {}) if source.kind == "rss" else {}
+        if not state.get("moved_to") or collect.now() - datetime.fromisoformat(state["moved_since"]) < collect.MOVE_SETTLED:
+            continue
+        old, source.value = source.value, state["moved_to"]
+        if not dry_run and store.get(conn, f"rss:{source.value}") is None:
+            store.put(conn, f"rss:{source.value}", {k: v for k, v in state.items() if k not in collect.UPKEEP})
+        moves.append(f"{old} → {source.value}")
+    return moves
+
+
 def claude(system: str, prompt: str, output):
     client = anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
     response = client.messages.parse(model=MODEL, max_tokens=16000, system=system,
@@ -194,16 +211,17 @@ def refresh(conn, user: str, days: int = 1, dry_run: bool = False) -> str:
               f"{name}'s new Mastodon activity since the last revision (JSON):\n\n"
               f"<activity>\n{json.dumps(activity, ensure_ascii=False, indent=1)}\n</activity>\n\nReturn the revised profile.")
     revision = claude(system_prompt(name), prompt, Revision)
+    summary = revision.summary + "".join(f"; feed moved: {m}" for m in follow_moves(conn, revision.learned_sources, dry_run))
     head, _ = split_sources(current.sources_yaml)
     new = (revision.profile_md.rstrip() + "\n", render_sources(head, revision.learned_sources), render_questions(revision.jev_questions))
     if dry_run:
-        return revision.summary
-    people.add_version(conn, user, "curator", revision.summary, *new)
+        return summary
+    people.add_version(conn, user, "curator", summary, *new)
     if activity:
         seen = [s["id"] for s in activity["favourites"] + activity["bookmarks"]] + state["seen"]
         store.put(conn, state_key, {"seen": seen[:5000], "following": activity["following"]})
         conn.commit()
-    return revision.summary
+    return summary
 
 
 # ── Onboarding ───────────────────────────────────────────────────────────────
