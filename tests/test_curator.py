@@ -579,3 +579,83 @@ def test_surely_sponsored_items_are_dropped_for_everyone(db, monkeypatch):
     traits.judge_traits(db, ["paid", "maybe", "deal"])
     rules = dict(db.execute("SELECT id, rule FROM items").fetchall())
     assert rules == {"paid": "sponsored (Jev 0.95)", "maybe": None, "deal": None}  # a confident advert still isn't dropped
+
+
+# ── A post's link in its text, with no card, is the article it shares ───────
+
+# Bruce's case in #30: a Bluesky post with no embed, its link only a facet.
+SUDO = "https://sudosecurity.org/complete-self-hosted-ai-stack-2026/"
+SUDO_POST = {
+    "uri": "at://did:plc:qjjkdzpwh7bnho3gwaozll2h/app.bsky.feed.post/3n2gpo52ngb2l", "labels": [],
+    "author": {"did": "did:plc:qjjkdzpwh7bnho3gwaozll2h", "handle": "sudosecurityorg.bsky.social", "displayName": "Santhdium", "labels": []},
+    "record": {
+        "$type": "app.bsky.feed.post", "createdAt": "2026-11-16T14:15:16.000Z",
+        "facets": [
+            {"features": [{"$type": "app.bsky.richtext.facet#link", "uri": SUDO}], "index": {"byteEnd": 246, "byteStart": 186}},
+            {"features": [{"$type": "app.bsky.richtext.facet#tag", "tag": "selfhosted"}], "index": {"byteEnd": 169, "byteStart": 158}},
+            {"features": [{"$type": "app.bsky.richtext.facet#tag", "tag": "ai"}], "index": {"byteEnd": 173, "byteStart": 170}},
+            {"features": [{"$type": "app.bsky.richtext.facet#tag", "tag": "homelab"}], "index": {"byteEnd": 182, "byteStart": 174}},
+        ],
+        "text": ("A complete self-hosted AI stack in 2026: Ollama + Open WebUI + LiteLLM behind Caddy on a home box — with "
+                 "the failure modes covered, not just the happy path.\n\n#selfhosted #ai #homelab\n\n" + SUDO),
+    },
+}
+SUDO_POST_URL = "https://bsky.app/profile/sudosecurityorg.bsky.social/post/3n2gpo52ngb2l"
+
+
+def linking(*uris, embed=None):
+    """The #30 post, its text linking to `uris` instead (shortened in the text, as apps do)."""
+    p = json.loads(json.dumps(SUDO_POST))
+    p["record"]["facets"] = [{"features": [{"$type": "app.bsky.richtext.facet#link", "uri": u}]} for u in uris]
+    p["record"]["text"] = "A complete self-hosted AI stack in 2026, with the failure modes covered " + " ".join(u[8:20] + "…" for u in uris)
+    if embed:
+        p["embed"] = embed
+    return p
+
+
+def test_bruces_bluesky_post_with_only_a_text_link_is_the_article():
+    from curator.collect import from_bsky
+
+    it = from_bsky(SUDO_POST, "bluesky:#homelab")
+    assert it["url"] == SUDO
+    assert it["shared_by"] == {"url": SUDO_POST_URL, "kind": "bluesky", "name": "Santhdium", "author": "@sudosecurityorg.bsky.social"}
+    assert it["title"].startswith("A complete self-hosted AI stack in 2026")  # the post's words, until follow reads the page
+    assert it["summary"].startswith("@sudosecurityorg.bsky.social: A complete")  # no blank lines for an empty description
+
+
+def test_a_text_link_counts_only_if_its_the_one_source():
+    from curator.collect import from_bsky
+
+    one = "https://blog.example/post?utm_source=bsky"
+    assert from_bsky(linking(one, "https://blog.example/post/"), "b")["url"] == one  # the same page twice
+    assert from_bsky(linking(SUDO, "https://blog.example/post"), "b")["url"] == SUDO_POST_URL  # a roundup
+    for shop in ("https://www.amazon.com/dp/B0ABC", "https://www.tiktok.com/@someone/video/123"):
+        assert from_bsky(linking(shop), "b")["url"] == SUDO_POST_URL
+    assert from_bsky(linking("https://bsky.app/profile/someone.bsky.social"), "b")["url"] == SUDO_POST_URL
+
+
+def test_a_real_card_wins_over_a_text_link():
+    from curator.collect import from_bsky
+
+    card = {"$type": "app.bsky.embed.external#view", "external": {"uri": "https://news.example/a", "title": "News", "description": "d"}}
+    it = from_bsky(linking(SUDO, embed=card), "b")
+    assert it["url"] == "https://news.example/a" and it["title"] == "News" and "untitled" not in it
+
+
+def test_a_mastodon_post_with_only_a_text_link_is_the_article():
+    content = ('<p><span class="h-card"><a href="https://x.social/@pal" class="u-url mention">@<span>pal</span></a></span> '
+               'my write-up of the new NAS: <a href="https://blog.example/nas-build" rel="nofollow noopener" target="_blank">'
+               '<span class="invisible">https://</span><span class="">blog.example/nas-build</span></a> '
+               '<a href="https://x.social/tags/homelab" class="mention hashtag" rel="tag">#<span>homelab</span></a></p>')
+    it = from_status({**toot("10", ""), "content": content}, "mastodon:#homelab")
+    assert it["url"] == "https://blog.example/nas-build"
+    assert it["shared_by"]["url"] == "https://x.social/@someone/10"
+
+
+def test_a_mastodon_quote_posts_re_link_is_not_its_article():
+    quoted = {**toot("11", "the quoted post " + LONG), "url": "https://y.social/@other/11", "account": {"acct": "other@y.social"}}
+    post = {**toot("12", ""), "content": f'<p>{LONG}</p><p class="quote-inline">RE: <a href="https://y.social/@other/11">'
+                                         'https://y.social/@other/11</a></p>', "quote": {"state": "accepted", "quoted_status": quoted}}
+    assert from_status(post, "m")["url"] == "https://x.social/@someone/12"
+    # Even when the quoted post can't be shown, the fallback isn't taken for an article.
+    assert from_status({**post, "quote": None}, "m")["url"] == "https://x.social/@someone/12"

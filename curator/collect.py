@@ -9,6 +9,7 @@ import math
 import re
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
 
 import feedparser
 import httpx
@@ -17,6 +18,7 @@ import yaml
 from curator import instagram, people, store
 from curator.canon import item_id, plain, short_title
 from curator.config import CYCLE, OWNER, USER_AGENT
+from curator.links import host, one_source
 
 log = logging.getLogger(__name__)
 UA = {"User-Agent": USER_AGENT}
@@ -355,19 +357,51 @@ def mastodon_quote(s: dict) -> dict | None:
     return quoted("@" + acct["acct"], acct.get("display_name") or "", text, q.get("url") or q.get("uri") or "", photo)
 
 
+# A post with no link card whose text links to one place that could be a
+# source is collected as that article all the same, as if it had one: Mastodon
+# fetches a card after the post arrives, and many Bluesky apps never make one.
+def text_card(url: str | None) -> dict | None:
+    return {"url": url, "title": None, "description": "", "image": None} if url else None
+
+
+class Links(HTMLParser):
+    """The links in a Mastodon post's HTML, but not its mentions and hashtags."""
+
+    def __init__(self):
+        super().__init__()
+        self.hrefs: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        classes = (a.get("class") or "").split()
+        if tag == "a" and a.get("href") and not {"mention", "hashtag", "u-url"} & set(classes):
+            self.hrefs.append(a["href"].strip())
+
+
+def mastodon_links(content: str) -> list[str]:
+    """The links in a post's text, without a quote post's "RE: <link>"."""
+    parser = Links()
+    parser.feed(QUOTE_INLINE.sub("", content or ""))
+    parser.close()
+    return parser.hrefs
+
+
 def mastodon_post(s: dict) -> dict:
     """A Mastodon post's parts, as items are made from it (here, and when a
     wrapper is followed to a post: follow.py): its own text, its text with
-    what it quotes, who posted it, its picture and its link card."""
+    what it quotes, who posted it, its picture and its link card (else the
+    one source its text links to: text_card)."""
     quote = mastodon_quote(s)
     text = plain(QUOTE_INLINE.sub("", s.get("content") or "") if quote else s.get("content"))
     account = s["account"]
+    url = s.get("url") or s["uri"]
+    links = [u for u in mastodon_links(s.get("content")) if u != (quote or {}).get("url")]
     return {
-        "url": s.get("url") or s["uri"], "kind": "mastodon", "text": text, "quote": quote, "author": "@" + account["acct"],
+        "url": url, "kind": "mastodon", "text": text, "quote": quote, "author": "@" + account["acct"],
         "published": datetime.fromisoformat(s["created_at"].replace("Z", "+00:00")),
         "poster": {"name": account.get("display_name") or "", "avatar": account.get("avatar_static") or account.get("avatar") or ""},
         "photo": next((m.get("preview_url") or m.get("url") for m in s.get("media_attachments") or [] if m.get("type") in ("image", "gifv")), None),
-        "card": s["card"] if has_link_card(s) else None,
+        "card": s["card"] if has_link_card(s) else text_card(one_source(links, host(url))),
     }
 
 
@@ -403,9 +437,12 @@ def post_item(post: dict, source: str, short_ok: bool = False) -> dict | None:
     with no link says too little to judge (except where `short_ok`)."""
     full, author, card = full_text(post), post["author"], post["card"]
     if card:
-        it = item(card["url"], card.get("title") or short_title(post["text"] or full), f"{card.get('description', '')}\n\n{author}: {full}",
+        summary = "\n\n".join(x for x in (card.get("description") or "", f"{author}: {full}") if x)
+        it = item(card["url"], card.get("title") or short_title(post["text"] or full), summary,
                   source, author, post["published"], image=card.get("image") or post["photo"])
         it["shared_by"] = shared_by(post)
+        if not card.get("title"):
+            it["untitled"] = True  # the post's words for now: the article's own title once follow reads it
     elif len(full) < 80 and not short_ok:
         return None
     else:
@@ -510,21 +547,30 @@ def mastodon_account(conn, http: httpx.Client, acct: str, roots: dict) -> list[d
 
 def bsky_post(p: dict) -> dict:
     """A Bluesky post's parts (see mastodon_post). Its link card is `card`
-    with `url`, as Mastodon's."""
+    with `url`, as Mastodon's; else the one source its text links to (from
+    its link facets: apps shorten a long link in the text itself)."""
     record = p.get("record", {})
     embed = p.get("embed") or {}
     media = embed.get("media") or embed  # recordWithMedia wraps the media
     ext = media.get("external") or {}
     handle = p["author"]["handle"]
+    url = f"https://bsky.app/profile/{handle}/post/{p['uri'].rsplit('/', 1)[-1]}"
     return {
-        "url": f"https://bsky.app/profile/{handle}/post/{p['uri'].rsplit('/', 1)[-1]}", "kind": "bluesky",
+        "url": url, "kind": "bluesky",
         "text": record.get("text", ""), "quote": bsky_quote(embed), "author": "@" + handle,
         "published": datetime.fromisoformat(record.get("createdAt", "").replace("Z", "+00:00")),
         "poster": {"name": p["author"].get("displayName") or "", "avatar": p["author"].get("avatar") or ""},
         "photo": next((i.get("thumb") or i.get("fullsize") for i in media.get("images") or []), None),
         "card": {"url": ext["uri"], "title": ext.get("title"), "description": ext.get("description", ""), "image": ext.get("thumb")}
-                if ext.get("uri") else None,
+                if ext.get("uri") else text_card(one_source(bsky_links(record), host(url))),
     }
+
+
+def bsky_links(record: dict) -> list[str]:
+    """The links in a post's text, from its facets."""
+    facets = record.get("facets") if isinstance(record.get("facets"), list) else []
+    return [f.get("uri") for facet in facets if isinstance(facet, dict) for f in facet.get("features") or []
+            if isinstance(f, dict) and f.get("$type") == "app.bsky.richtext.facet#link"]
 
 
 def bsky_unwanted(p: dict) -> bool:

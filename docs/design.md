@@ -18,6 +18,13 @@ picks what each reader would want, learning from what they actually read.
    A reply stands for
    its conversation: the conversation's first post is what gets judged.
    A quote post carries the text of the post it quotes.
+   A post that shares a link is collected as the article it links to, the
+   post's text its summary and the post kept as `via`: its link card's, or
+   with no card (Mastodon fetches one after the post arrives; many Bluesky
+   apps never make one) the one place its own text links to that could be
+   a source (not a shop, a profile, a sign-in-only site; several distinct
+   links make a roundup, which stays a post). Until the article is read
+   (step 2) its title is the post's first line.
    Each feed is fetched only when it's due, as often as it changes: about
    half the median gap between its last ten entries' dates, between one
    cycle and 4 hours (a feed without dates: twice as often after a new

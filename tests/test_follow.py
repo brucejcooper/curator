@@ -497,3 +497,34 @@ def test_stories_without_wrappers_lead_as_before(db, apart):
     choose_lead(db, "s")
     rows = db.execute("SELECT id, summary, source, published FROM items").fetchall()
     assert db.execute("SELECT lead_id FROM stories").fetchone()[0] == best_version(rows, {})["id"] == "b"
+
+
+# ── A post's link in its text ────────────────────────────────────────────────
+
+def test_a_wrapper_post_with_only_a_text_link_points_there():
+    from curator.collect import mastodon_post
+
+    post = mastodon_post(status(text=f'The build log: <a href="{HACKADAY}">hackaday.com/2026/11/07/a-pen…</a>'))
+    assert post["card"]["url"] == HACKADAY and follow.post_hop(post)["next"] == HACKADAY
+
+
+def test_a_text_link_item_takes_the_articles_title(db, web, models, similarity):
+    shared = skeet()
+    del shared["embed"]
+    shared["record"]["facets"] = [{"features": [{"$type": "app.bsky.richtext.facet#link", "uri": "https://blog.example/plotter"}]}]
+    web.routes["https://blog.example/plotter"] = long_page("https://github.com/maker/plotter", paragraphs=20)
+    it = from_bsky(shared, "bluesky:#plotters")
+    assert it["url"] == "https://blog.example/plotter" and it["title"] == "This is great"
+    follow.follow(db, [it])
+    assert it["url"] == "https://blog.example/plotter" and it["title"] == "A page" and "untitled" not in it
+
+
+def test_a_post_linking_to_another_post_is_read_as_that_post(db, web, models, similarity):
+    # A shared link to a toot is the toot, read from its server: not the sharer's post under the toot's address.
+    shared = skeet()
+    del shared["embed"]
+    shared["record"]["facets"] = [{"features": [{"$type": "app.bsky.richtext.facet#link", "uri": TOOT}]}]
+    it = from_bsky(shared, "bluesky:#plotters")
+    assert it["url"] == TOOT
+    follow.follow(db, [it])
+    assert "https://chaos.social/api/v1/statuses/113456789012345678" in web.asked

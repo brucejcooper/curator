@@ -23,7 +23,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin
 
 import httpx
 
@@ -31,6 +31,7 @@ from curator import articles, store
 from curator.canon import canonical_url, item_id, short_title
 from curator.collect import bluesky_posts, bsky_post, bsky_unwanted, full_text, mastodon_post, quoting
 from curator.images import POST_URL, preview_image
+from curator.links import followable, host, is_source, site
 from curator.secrets import get_secret
 
 log = logging.getLogger(__name__)
@@ -51,18 +52,6 @@ MODEL = os.environ.get("CURATOR_FOLLOW_MODEL", "claude-haiku-5-5")
 HAIKU_DAILY = int(os.environ.get("CURATOR_FOLLOW_HAIKU_DAILY", "300"))
 CACHE_DAYS = 30
 
-# Sites that can't be read without signing in: never followed (an item there
-# stays as it is, and a wrapper pointing there is the item).
-NEVER = {"twitter.com", "x.com", "t.co", "instagram.com", "facebook.com", "fb.com", "fb.watch", "youtube.com",
-         "youtu.be", "threads.net", "threads.com", "linkedin.com", "tiktok.com"}
-# Links that aren't what a page points at: sharing, shops and affiliate redirects.
-NOT_SOURCES = {"reddit.com", "pinterest.com", "whatsapp.com", "t.me", "telegram.me", "getpocket.com", "flipboard.com",
-               "amazon.com", "amzn.to", "ebay.com", "aliexpress.com", "etsy.com", "walmart.com", "bestbuy.com",
-               "newegg.com", "skimresources.com", "shareasale.com", "awin1.com", "viglink.com", "linksynergy.com",
-               "anrdoezrs.net", "dpbolvw.net", "jdoqocy.com", "tkqlhce.com", "kqzyfj.com", "avantlink.com", "howl.me",
-               "geni.us", "patreon.com", "ko-fi.com", "buymeacoffee.com", "paypal.com", "paypal.me", "gravatar.com"}
-NOT_SOURCE_PATH = re.compile(r"/(tags?|categor(y|ies)|authors?|topics?|search|share|sharer|intent|login|signup|subscribe|feed)(/|\.|$)"
-                             r"|^/@[^/]+/?$|^/users/[^/]+/?$|^/profile/[^/]+/?$", re.I)
 SOURCE_MARK = re.compile(r"\b(via|source|h/t|hat tip|spotted (by|on)|originally|first (posted|seen))\b", re.I)
 EMBED_CLASSES = ("mastodon-embed", "bluesky-embed", "twitter-tweet", "instagram-media", "tiktok-embed")
 
@@ -89,28 +78,6 @@ HAIKU_SYSTEM = ("You decide whether a web page or social post (the wrapper) adds
 
 
 # ── Where a page points ──────────────────────────────────────────────────────
-
-def host(url: str) -> str:
-    try:
-        name = urlsplit(url).hostname or ""
-    except ValueError:
-        return ""
-    return name.lower().removeprefix("www.").removeprefix("m.").removeprefix("amp.")
-
-
-def site(name: str) -> str:
-    """The registrable part of a host name, near enough: example.co.uk, example.com."""
-    labels = name.split(".")
-    n = 3 if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in ("co", "com", "org", "net", "gov", "edu", "ac") else 2
-    return ".".join(labels[-n:])
-
-
-def followable(url) -> bool:
-    if not isinstance(url, str) or not url.startswith(("https://", "http://")) or len(url) > 2000:
-        return False
-    name = host(url)
-    return bool(name) and name not in NEVER and site(name) not in NEVER
-
 
 def post_url(url: str) -> str | None:
     """A Mastodon or Bluesky post's address from one of its embeds' (or itself)."""
@@ -182,19 +149,6 @@ class Page(articles.Paragraphs):
         if self.link:
             self.anchor.append(data)
         super().handle_data(data)
-
-
-def is_source(url: str, home: str) -> bool:
-    """Whether a link in a page's text could be what it points at: elsewhere,
-    and not sharing, a shop, a profile or a tag page."""
-    if not followable(url) or site(host(url)) == site(home):
-        return False
-    name = host(url)
-    try:
-        path = urlsplit(url).path
-    except ValueError:
-        return False
-    return name not in NOT_SOURCES and site(name) not in NOT_SOURCES and not NOT_SOURCE_PATH.search(path)
 
 
 def next_hop(p: Page, base: str) -> tuple[str | None, bool]:
@@ -488,7 +442,7 @@ def follow(conn, items: list[dict], tally: dict | None = None) -> dict[str, tupl
                 c["cached"] = memo
                 c["hops"].append({"name": host(it["url"]), "kind": "article", **(memo["via"] or {}),
                                   "url": it["url"], "author": it["author"]})
-            elif POST_URL.match(it["url"]) and "poster" in it:
+            elif POST_URL.match(it["url"]) and "poster" in it and "shared_by" not in it:  # a post, not a post's link to one
                 c["hops"].append(item_hop(it))
         todo = [c for c in chains if not c["hops"]]
         feed = lambda c: c["items"][0]["source"].removeprefix("rss:") if c["items"][0]["source"].startswith("rss:") else ""
@@ -611,6 +565,8 @@ def follow(conn, items: list[dict], tally: dict | None = None) -> dict[str, tupl
             if followable(nxt) and canonical_url(nxt) not in c["seen"]:
                 points(c, nxt, memo["verdict"] if memo else "undecided")
         for it in c["items"]:
+            if len(c["hops"]) == 1 and it.pop("untitled", False) and c["hops"][0].get("title"):
+                it["title"] = " ".join(c["hops"][0]["title"].split())[:300]  # the article's own, not the post's words
             if c.get("points_to"):
                 it["points_to"] = {**c["points_to"], "via": [it["shared_by"]] if it.get("shared_by") and len(c["hops"]) == 1 else []}
 
