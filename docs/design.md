@@ -82,22 +82,36 @@ picks what each reader would want, learning from what they actually read.
    by heuristic, cache, Jev and Haiku.
 3. **Resolve the story.** Identical links (tracking parameters stripped) and
    near-identical titles become one item, with every place it was seen
-   recorded. Items get a local embedding (`bge-small`, on the CPU); items from
-   different sources within 72 hours that are close enough are one story.
-   Pairs in the grey zone are put to Jev ("the same story?"), including an
-   outlet's own reposts and one event split over several articles (a beta
-   day's post per OS). A wrapper kept as an item of its own (not followed:
+   recorded. Two items are the same story when a reader of one would learn
+   nothing new from the other: the same event, announcement, release,
+   incident or finding, in the same state. The same news from other outlets
+   or in other words, a re-post, a live page and the report of the same
+   event, and articles on parts of one launch (a beta day's post per OS) are
+   the same story. Anticipation (a preview, speculation, "braces for") and
+   the event itself are not, at any time apart; nor are an event and its
+   outcome, a report and a later reversal, or news and an explainer of it.
+   Items get a local embedding (`bge-small`, on the CPU), but similarity
+   only proposes: a preview and its event read alike (up to 0.90 measured).
+   A new item's closest earlier items, one per story and up to three, are
+   put to Jev ("the same thing?"), and the item joins the story of the
+   closest one Jev confirms, and only that one; it never merges two stories.
+   A near-copy (0.97 or closer, within 6 hours) joins without asking; where
+   Jev can't say, an item past the old threshold (0.87) joins as before.
+   A story takes no items once its first is 72 hours old, so stories don't
+   chain over days. A wrapper kept as an item of its own (not followed:
    past the Haiku cap, out of time, or nobody sure) and the item it points
    to are one story by definition, whatever the embedding says, in either
    order of arrival; each new item's next hop and the verdict on it are
    kept (`points_to`) for this. Each story's
-   lead is its most informative version: a fuller summary, first to report,
-   a source the readers trust, fresh. But an item that points to another of
+   lead is its best version: the most significant news report (the item's
+   `importance` and `news` traits, so the news leads over an explainer of
+   it; chosen again once the traits are in), a fuller summary, first to
+   report, a source the readers trust, fresh. But an item that points to another of
    its story and doesn't add value to it (a pointer, or undecided) never
    leads over it: it's taken out of the running, and becomes a "via" of
    what it points to. A wrapper that adds value is a version like any
-   other. `/status` counts the items put in a story by a link and the leads
-   the rule decided.
+   other. `/status` counts the items put in a story by a link, the close
+   ones Jev kept apart and the leads the rule decided.
 4. **Judge**, cheapest first. Rules for everyone (not English, hashtag soup,
    labelled sponsored by its source, or a sponsored column: its opening
    paragraph says "Apple @ Work is brought to you by Mosyle"). A sponsor of

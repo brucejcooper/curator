@@ -3,7 +3,7 @@ import numpy as np
 from curator.canon import canonical_url, item_id, title_key
 from curator.collect import from_status
 from curator.judge import jev_score
-from curator.stories import find_story, grey_matches
+from curator.stories import candidates, find_story
 
 
 def test_tracking_params_and_www_ignored():
@@ -40,16 +40,16 @@ def test_same_source_needs_a_closer_match():
 
 
 
-def test_grey_zone_asks_about_reposts_and_other_stories_too():
-    # One outlet's iOS and macOS beta posts (0.86): too far apart to merge
-    # outright, close enough to ask. Asked even once the item has a story,
-    # one earlier item per other story, never the story it's already in.
+def test_jev_is_asked_about_reposts_and_other_stories_too():
+    # One outlet's iOS and macOS beta posts (0.86): close enough to ask.
+    # One earlier item per story, none from the stories skipped (past
+    # their window).
     ids, stories, sources = ["ios", "ios9", "far"], ["s1", "s1", "s2"], ["rss:MR", "rss:9", "rss:MR"]
     matrix = np.stack([unit(1, 0.59, 0), unit(1, 0.6, 0), unit(1, 2, 0)])
     mac = unit(1, 0, 0)
     assert 0.78 < float(matrix[0] @ mac) < 0.93 and float(matrix[2] @ mac) < 0.72
-    assert grey_matches(mac, "rss:MR", None, ids, stories, sources, matrix) == ["ios"]
-    assert grey_matches(mac, "rss:MR", "s1", ids, stories, sources, matrix) == []
+    assert [c for c, _ in candidates(mac, "rss:MR", ids, stories, sources, matrix)] == ["ios"]
+    assert candidates(mac, "rss:MR", ids, stories, sources, matrix, {"s1"}) == []
 
 def test_non_english_posts_skipped():
     status = {"created_at": "2026-10-01T00:00:00Z", "content": "<p>" + "Hallo " * 30 + "</p>", "language": "de",

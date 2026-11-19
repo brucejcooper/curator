@@ -393,7 +393,8 @@ def describe(c: dict) -> str:
             f"{c.get('haiku', 0)} Haiku ({c.get('haiku_tokens', 0):,} tokens; cap {HAIKU_DAILY}, "
             f"{c.get('haiku_capped', 0)} past it); {per:.2f} model calls per new item; "
             f"{c.get('failed', 0)} unreadable, {c.get('timeouts', 0)} out of time; "
-            f"{c.get('linked', 0)} put in a story by a link, {c.get('original_leads', 0)} leads kept or given to an original")
+            f"{c.get('linked', 0)} put in a story by a link, {c.get('kept_apart', 0)} close ones Jev kept apart, "
+            f"{c.get('original_leads', 0)} leads kept or given to an original")
 
 
 def count(conn, stats: Counter) -> None:

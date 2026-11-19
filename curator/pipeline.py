@@ -13,7 +13,7 @@ from curator.collect import collect_all
 from curator.config import BACKUPS, DATA, DB
 from curator.judge import apply_shared_rules, judge_for, judge_local, visible
 from curator.publish import publish
-from curator.stories import ingest
+from curator.stories import choose_leads, ingest
 from curator.traits import judge_traits
 
 log = logging.getLogger(__name__)
@@ -92,6 +92,7 @@ def process(conn, everyone: list, found: list[dict], affected_only: bool = False
     if new:
         apply_shared_rules(conn, new)
         judge_traits(conn, new)
+        choose_leads(conn, new)  # how significant each version is weighs in now
     # Items seen anew in someone's source (new, or new to them) need judging for them.
     fresh = sorted({it_id for it_id in new} | recently_sighted(conn, started))
     published = {}
