@@ -891,10 +891,57 @@ await ctx.close();
   await sc.addInitScript(([s]) => localStorage.setItem('reader.session', JSON.stringify(s)), [session]);
   const sp = await sc.newPage();
   const cacheNames = () => sp.evaluate(() => caches.keys());
-  const until = async (what, test) => {
-    for (let i = 0; i < 50; i++) if (await test()) return;
-    else await sp.waitForTimeout(100);
-    assert.fail(what);
+  // Where the service worker stands, as the page sees it (every version's
+  // script is sw.js, so states tell them apart, not URLs).
+  const swState = () => sp.evaluate(async () => {
+    const reg = await navigator.serviceWorker.getRegistration();
+    return {
+      installing: reg?.installing?.state, waiting: reg?.waiting?.state, active: reg?.active?.state,
+      controller: navigator.serviceWorker.controller?.state, caches: await caches.keys(),
+    };
+  });
+  // Chromium's own view of the versions (versionId → status), which holds
+  // while no page of the app is open.
+  const cdp = await sc.newCDPSession(sp);
+  const versions = new Map();
+  cdp.on('ServiceWorker.workerVersionUpdated', ({ versions: vs }) => vs.forEach((v) => versions.set(v.versionId, v.status)));
+  await cdp.send('ServiceWorker.enable');
+  // Polls `test` until it holds; `ms` is a ceiling, not a delay. A failure says
+  // how long it waited and where the service worker stood.
+  const until = async (what, test, ms = 30000, state = swState) => {
+    const t0 = Date.now();
+    while (!(await test())) {
+      if (Date.now() - t0 > ms) assert.fail(`${what}: not after ${Date.now() - t0} ms; service worker ${JSON.stringify(await state())}`);
+      await sp.waitForTimeout(100);
+    }
+  };
+  // A new version taking over: installed while this page runs, in control from
+  // the next start, the other versions' caches gone. The switch is made with
+  // the app closed, as on the phone, because Chromium races it against the
+  // page (#24). It activates a skip-waiting worker by first stopping the old
+  // one; when the page's requests start the old one again at that moment, the
+  // new one stays waiting for as long as the page is open (half of the first
+  // runs). And a reload in that state can lose its navigation as the old
+  // worker goes. So: wait for the install, leave the page, wait for Chromium
+  // to make the new version the active one, then open the app again.
+  const takesOver = async (version, what) => {
+    const cache = `mastorss-${version} ${SW_APP}`;
+    await until(`${what}: the new version installs`, async () => {
+      const s = await swState();
+      return !s.installing && s.caches.includes(cache);
+    });
+    await sp.goto('about:blank');
+    await until(`${what}: the new version activates with the app closed`, async () => {
+      const statuses = [...versions.values()];
+      return statuses.every((s) => s === 'activated' || s === 'redundant') && statuses.filter((s) => s === 'activated').length === 1;
+    }, 30000, async () => Object.fromEntries(versions));
+    await sp.goto(SW_APP);
+    await sp.waitForSelector('#timeline article');
+    await until(what, async () => {
+      const s = await swState();
+      const kept = s.caches.filter((k) => k.startsWith('mastorss-') && k.endsWith(` ${SW_APP}`) && !k.startsWith('mastorss-swlog '));
+      return s.controller === 'activated' && !s.waiting && !s.installing && kept.length === 1 && kept[0] === cache;
+    });
   };
   // Every file of the version, and the page, in its cache.
   const whole = async (version, names) => sp.evaluate(async ([v, names]) => {
@@ -917,8 +964,7 @@ await ctx.close();
   const v1 = await deploy();
   await sp.goto(SW_APP);
   await sp.waitForSelector('#timeline article');
-  await until('the new worker takes over and drops v4', async () => (await cacheNames()).includes(`mastorss-${v1} http://localhost:8125/`)
-    && !(await cacheNames()).some((k) => k.startsWith('mastorss-v4')));
+  await takesOver(v1, 'the new worker takes over and drops v4');
   assert.ok(await whole(v1, await files()), 'the new version is cached whole');
 
   // (b) A new version between two loads: the second load runs the new code,
@@ -928,13 +974,8 @@ await ctx.close();
   await sp.reload();
   await sp.waitForSelector('#timeline article');
   assert.equal(await sp.evaluate(() => globalThis.shellMark), 'v2', 'the new render.js runs');
-  await until('v2 replaces v1', async () => {
-    const names = await cacheNames();
-    return names.includes(`mastorss-${v2} http://localhost:8125/`) && !names.includes(`mastorss-${v1} http://localhost:8125/`);
-  });
+  await takesOver(v2, 'v2 replaces v1');
   assert.ok(await whole(v2, v2files), 'v2 is cached whole');
-  await sp.reload();
-  await sp.waitForSelector('#timeline article');
   assert.equal(await sp.evaluate(() => globalThis.shellMark), 'v2');
 
   // A start on a hung connection shows the reader from this version's cache
