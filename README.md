@@ -52,7 +52,7 @@ visit is a short interview that writes their first profile.
 | `CURATOR_DAILY_AT`, `TZ` | When the daily jobs run (default 04:30) |
 | `CURATOR_SCOUT_WEEKDAY` | Which day's daily run looks for new sources (0 = Monday; default 6, Sunday) |
 | `CURATOR_DATA` | The data folder (SQLite, feeds, backups); `/data` in the container |
-| `CURATOR_EXPORT_GIT_URL`, `CURATOR_EXPORT_USERS`, `FORGEJO_TOKEN` | Optional: a private git repo the chosen readers' profiles are exported to each day |
+| `CURATOR_EXPORT_GIT_URL`, `CURATOR_EXPORT_USERS`, `FORGEJO_TOKEN` | Optional: a private git repo the chosen readers' profiles are exported to each day (the token is given to git per command, never stored in the clone) |
 
 On the Mac, secrets can come from the keychain instead (service `curator`,
 account = the variable name).

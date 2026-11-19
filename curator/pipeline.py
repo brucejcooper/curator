@@ -1,5 +1,6 @@
 """The fast loop (every 15 minutes) and the daily jobs, for every reader."""
 
+import base64
 import logging
 import os
 import subprocess
@@ -143,15 +144,22 @@ def export_profiles(conn) -> None:
     if not url or not users:
         return
     repo = DATA / "export"
+    # The token goes to git per command, as a header in the environment: never
+    # in the remote URL (.git/config, at rest) nor in argv (ps, and the
+    # CalledProcessError of a failed command). Each run sets the plain URL,
+    # which also scrubs a clone from when the token was in it (#37).
     token = os.environ.get("FORGEJO_TOKEN", "")
-    authed = url.replace("https://", f"https://oauth2:{token}@") if token else url
-    git = lambda *a: subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True, text=True).stdout
+    env = os.environ.copy()
+    if token:
+        basic = base64.b64encode(f"oauth2:{token}".encode()).decode()
+        env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.extraHeader", GIT_CONFIG_VALUE_0=f"Authorization: Basic {basic}")
+    git = lambda *a: subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True, text=True, env=env).stdout
     if not (repo / ".git").exists():
-        subprocess.run(["git", "clone", "--quiet", authed, str(repo)], check=True)
+        subprocess.run(["git", "clone", "--quiet", url, str(repo)], check=True, env=env)
         git("config", "user.name", "curator")
         git("config", "user.email", os.environ.get("CURATOR_GIT_EMAIL", "curator@localhost"))
     else:
-        git("remote", "set-url", "origin", authed)
+        git("remote", "set-url", "origin", url)
         git("pull", "--quiet", "--rebase")
     summaries = []
     for user in users:

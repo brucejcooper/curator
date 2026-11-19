@@ -29,7 +29,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from curator import follow, instagram, mastodon_connect, people, reader, shell, store
-from curator.auth import User, user_from_token
+from curator.auth import AuthUnavailable, User, user_from_token
 from curator.collect import DEAD_AFTER, shared_sources
 from curator.config import PUBLIC_URL
 from curator.people import Profile
@@ -66,7 +66,12 @@ def api(handler, needs_profile: bool = True):
     """A reader API endpoint: needs a valid SSO token; runs the (blocking)
     handler in a thread with a database connection and who's asking."""
     async def endpoint(request: Request) -> Response:
-        user = await run_in_threadpool(user_from_token, bearer(request))
+        try:
+            user = await run_in_threadpool(user_from_token, bearer(request))
+        except AuthUnavailable:
+            # The provider is down and we can't check the token: not a 401,
+            # which the app takes as signed out (#37); it retries this.
+            return JSONResponse({"error": "sign-in unavailable"}, status_code=503, headers={"Retry-After": "30"})
         if user is None:
             return JSONResponse({"error": "sign in"}, status_code=401)
         body = (await request.json() if await request.body() else {}) if request.method in ("POST", "PUT") else {}
