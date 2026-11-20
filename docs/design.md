@@ -239,10 +239,13 @@ share sheet.
 
 ## Privacy
 
-- The Mac agent sends titles and URLs, never page contents, and drops
-  anything on your never-collect list before sending. The list stays on your
-  Mac; only its rules go to the curator, which purges matching history.
-  Agent history is kept 90 days.
+- The Mac agent sends each browser visit's time, URL and title, never the
+  page's contents, and the prompts you type into Claude Code: their text, up
+  to 2,000 characters each, with anything that looks like a key or token
+  redacted, and the project folder's name (never Claude's replies or tool
+  output). It drops visits your never-collect list forbids before sending.
+  The list stays on your Mac; only its rules go to the curator, which purges
+  matching history. Agent history is kept 90 days.
 - Jev and Claude see item text and your profile, never raw history.
 - Mastodon access is read-only, and tokens are encrypted at rest.
 - Each reader's feed is at an address only they know.

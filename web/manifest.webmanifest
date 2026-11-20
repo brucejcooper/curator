@@ -1,6 +1,6 @@
 {
-  "name": "Mastorss",
-  "short_name": "Mastorss",
+  "name": "curator",
+  "short_name": "curator",
   "description": "Your Mastodon home timeline and the curator's picks, read oldest to newest.",
   "id": "./",
   "start_url": "./",

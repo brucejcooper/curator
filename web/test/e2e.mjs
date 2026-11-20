@@ -12,7 +12,7 @@ import { join } from 'node:path';
 
 const APP = process.env.APP_URL || 'http://localhost:8124/';
 const AUTH = 'https://sso.example';
-const ISSUER = `${AUTH}/application/o/mastorss/`;
+const ISSUER = `${AUTH}/application/o/curator/`;
 const PIXEL = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==', 'base64');
 
 // ---------------------------------------------------------------- fake data
@@ -127,11 +127,11 @@ async function fakes(ctx) {
   await ctx.route(`${AUTH}/**`, async (route) => {
     const req = route.request();
     const url = new URL(req.url());
-    if (url.pathname === '/application/o/mastorss/.well-known/openid-configuration') {
+    if (url.pathname === '/application/o/curator/.well-known/openid-configuration') {
       return json(route, { issuer: ISSUER, authorization_endpoint: `${AUTH}/application/o/authorize/`, token_endpoint: `${AUTH}/application/o/token/` });
     }
     if (url.pathname === '/application/o/authorize/') {
-      assert.equal(url.searchParams.get('client_id'), 'mastorss');
+      assert.equal(url.searchParams.get('client_id'), 'curator');
       assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
       assert.match(url.searchParams.get('scope'), /offline_access/);
       const back = new URL(url.searchParams.get('redirect_uri'));
@@ -141,7 +141,7 @@ async function fakes(ctx) {
     }
     if (url.pathname === '/application/o/token/') {
       const form = new URLSearchParams(req.postData());
-      assert.equal(form.get('client_id'), 'mastorss');
+      assert.equal(form.get('client_id'), 'curator');
       if (form.get('grant_type') === 'authorization_code') {
         assert.equal(form.get('code'), 'the-code');
         assert.ok(form.get('code_verifier'));
@@ -158,7 +158,7 @@ async function fakes(ctx) {
     }
     return route.fulfill({ status: 404 });
   });
-  await ctx.route(/\/config\.json$/, (r) => json(r, { authority: ISSUER, client_id: 'mastorss', sign_in: 'Sign in with Example SSO' }));
+  await ctx.route(/\/config\.json$/, (r) => json(r, { authority: ISSUER, client_id: 'curator', sign_in: 'Sign in with Example SSO' }));
   // the curator's reader API (same origin as the app)
   await ctx.route(/\/api\//, async (route) => {
     const req = route.request();
@@ -865,7 +865,7 @@ await ctx.close();
   const staleApi = (await readFile(join(root, 'js/api.js'), 'utf8')).replace('export function setLogger', 'function setLogger').replace('export async function timedFetch', 'async function timedFetch');
   const server = http.createServer(async (req, res) => {
     const path = new URL(req.url, 'http://x').pathname;
-    if (path === '/config.json') return res.end(JSON.stringify({ authority: ISSUER, client_id: 'mastorss' }));
+    if (path === '/config.json') return res.end(JSON.stringify({ authority: ISSUER, client_id: 'curator' }));
     if (shellDelay && path !== '/sw.js') await new Promise((r) => setTimeout(r, shellDelay));
     if (path === failing) return res.writeHead(500).end();
     const type = types[path.split('.').pop()] || 'text/html';

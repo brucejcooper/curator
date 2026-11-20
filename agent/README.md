@@ -4,7 +4,16 @@ Collects your Firefox and Safari history (Safari includes iPhone visits synced
 by iCloud) and your own Claude Code prompts, drops anything your never-collect
 list forbids, and keeps the rest in a local outbox
 (`~/Library/Application Support/curator-agent/outbox.sqlite`) until it is sent
-to the curator. Titles and URLs only, never page contents.
+to the curator. What it sends:
+
+- **Firefox and Safari**: each visit's time, URL and page title (and, for
+  Safari, whether it was the Mac or an iPhone). Never the page's contents.
+- **Claude Code**: each prompt you typed, with its time, the project
+  folder's name and its text, cut to the first 2,000 characters, with
+  anything that looks like an API key, token or private key replaced by
+  `[redacted]`. Never Claude's replies, tool output or files. The
+  never-collect list applies to URLs, so it doesn't filter prompts; `pause`
+  does.
 
     uv run curator-agent status
     uv run curator-agent pause 2h

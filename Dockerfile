@@ -20,7 +20,7 @@ RUN uv run --no-sync python -c "from fastembed import TextEmbedding; TextEmbeddi
 RUN useradd --uid 5000 --create-home curator && mkdir -p /data && chown -R curator /data /opt/fastembed
 USER curator
 ENV PATH=/app/.venv/bin:$PATH \
-    CURATOR_DATA=/data CURATOR_REPO=/data/repo PYTHONUNBUFFERED=1
+    CURATOR_DATA=/data PYTHONUNBUFFERED=1
 VOLUME /data
 EXPOSE 8000
 HEALTHCHECK --interval=60s --timeout=5s CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"

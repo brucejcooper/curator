@@ -1,7 +1,7 @@
 [project]
 name = "curator"
 version = "0.1.0"
-description = "AI-curated news feed for Mastorss"
+description = "A self-hosted, AI-curated news reader"
 requires-python = ">=3.12"
 dependencies = [
   "anthropic>=0.70",

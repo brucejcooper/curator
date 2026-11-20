@@ -5,4 +5,5 @@ __pycache__/
 *.sqlite
 *.db
 state/
-node_modules/
+# a folder from npm, or the dev shell's link to nixpkgs' Playwright
+node_modules

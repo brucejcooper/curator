@@ -4,7 +4,7 @@
   # server from uv.lock (binary wheels only, as `uv sync` installs them), so a
   # lock change is a dependency change there too. The Dockerfile stays for
   # anyone running it as a container.
-  description = "curator: AI-curated news feed for Mastorss";
+  description = "curator: a self-hosted, AI-curated news reader";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
@@ -65,6 +65,33 @@
 
       # The server and everything it imports (`uv sync --extra server`).
       venv = pythonSet.mkVirtualEnv "curator-env" { curator = [ "server" ]; };
+      # The same, with the test dependencies (`uv sync --extra server`, which
+      # adds the dev group).
+      devVenv = pythonSet.mkVirtualEnv "curator-dev-env" {
+        curator = [
+          "server"
+          "dev"
+        ];
+      };
+
+      # The app's end-to-end test (web/test/e2e.mjs): serves web/ and runs it
+      # against the browsers nixpkgs' Playwright was built for.
+      e2e = pkgs.writeShellApplication {
+        name = "curator-e2e";
+        runtimeInputs = [
+          pkgs.git
+          pkgs.nodejs
+          pkgs.http-server
+        ];
+        text = ''
+          cd "$(git rev-parse --show-toplevel)/web"
+          http-server -p 8124 -c-1 -s . &
+          server=$!
+          trap 'kill "$server"' EXIT
+          until node -e "fetch('http://localhost:8124/').catch(() => process.exit(1))"; do sleep 0.2; done
+          APP_URL=http://localhost:8124/ node test/e2e.mjs
+        '';
+      };
     in
     {
       packages.${system}.default = venv;
@@ -72,6 +99,33 @@
       apps.${system}.default = {
         type = "app";
         program = "${venv}/bin/curator";
+      };
+
+      # `nix develop -c python -m pytest -q` and `nix develop -c curator-e2e`.
+      devShells.${system}.default = pkgs.mkShell {
+        packages = [
+          devVenv
+          pkgs.git
+          pkgs.nodejs
+          pkgs.http-server
+          e2e
+        ];
+        # Playwright's node package and its browsers, from one nixpkgs
+        # release, so they match (npm's would want browsers of its own).
+        PLAYWRIGHT_BROWSERS_PATH = pkgs.playwright-driver.browsers;
+        PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS = "true";
+        # The shell's service-worker test builds the shell with this Python.
+        CURATOR_PYTHON = "${devVenv}/bin/python";
+        shellHook = ''
+          # The checkout's code, not the copy in the venv.
+          root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+          export PYTHONPATH="$root:$root/agent''${PYTHONPATH:+:$PYTHONPATH}"
+          # e2e.mjs imports `playwright`, found from web/test/node_modules;
+          # left alone if npm put one there.
+          if [ -d "$root/web/test" ] && { [ -L "$root/web/test/node_modules" ] || [ ! -e "$root/web/test/node_modules" ]; }; then
+            ln -sfn ${pkgs.playwright-test}/lib/node_modules "$root/web/test/node_modules"
+          fi
+        '';
       };
     };
 }

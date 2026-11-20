@@ -1,7 +1,7 @@
 {
   "name": "curator-reader",
   "private": true,
-  "description": "The reader app (formerly Mastorss), served by the curator.",
+  "description": "The reader app, served by the curator.",
   "type": "module",
   "scripts": {
     "start": "http-server -p 8124 -c-1 -s .",

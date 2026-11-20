@@ -19,14 +19,15 @@ See [`docs/design.md`](docs/design.md) for how it works.
 
 - `curator/`: the service: collect, group stories, judge, publish, the API.
 - `web/`: the reader app (static files, no build step), served at `/`.
-- `agent/`: an optional Mac agent that sends your browser and Claude Code
-  history (titles and URLs only) to sharpen your profile.
+- `agent/`: an optional Mac agent that sends your browser history (each
+  visit's time, URL and page title) and the prompts you type into Claude Code
+  (their text, up to 2,000 characters each) to sharpen your profile. See
+  [`agent/README.md`](agent/README.md) for exactly what it sends.
 - `tests/`: Python tests; `web/test/` has the app's end-to-end test.
 
 ## Running it
 
     uv sync --extra server
-    uv run pytest
     uv run curator                      # web server + 15-minute loop + daily jobs
     uv run curator-refresh-profile ALEX # one reader's daily profile revision
 
@@ -36,23 +37,66 @@ tokens; redirect URI `<CURATOR_PUBLIC_URL>/`), whose access tokens carry
 `preferred_username`. Anyone it lets in can use the curator; their first
 visit is a short interview that writes their first profile.
 
+## Running the tests
+
+On NixOS (or anywhere with Nix), the flake's dev shell has everything, the
+browsers for the app's test included:
+
+    nix develop -c python -m pytest -q   # the Python tests
+    nix develop -c curator-e2e           # the app's end-to-end test (web/test/e2e.mjs)
+
+Elsewhere, with [uv](https://docs.astral.sh/uv/) and Node:
+
+    uv sync --extra server
+    uv run pytest
+    cd web && npm install && npx playwright install chromium
+    npm start &                          # serves web/ on :8124
+    npm test
+
+CI (`.forgejo/workflows/ci.yml`) runs both, the package build and gitleaks
+on every push to main.
+
 ### Settings (environment)
 
-| Variable | |
-|---|---|
-| `CURATOR_PUBLIC_URL` | Where it's served, e.g. `https://curator.example.org` |
-| `OIDC_ISSUER`, `OIDC_CLIENT_ID` | Your sign-in provider and the reader app's client |
-| `CURATOR_SIGN_IN_LABEL` | The sign-in button's text |
-| `CURATOR_OWNER` | The admin's username |
-| `CURATOR_SECRET_KEY` | A Fernet key, for Mastodon tokens at rest (`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`) |
-| `ANTHROPIC_API_KEY`, `JEV_API_KEY` | Claude (profiles, and Haiku where Jev can't say whether a wrapper adds anything) and Jev (judging) |
-| `CURATOR_FOLLOW_MODEL`, `CURATOR_FOLLOW_HAIKU_DAILY` | The model for that (default `claude-haiku-5-5`), and its calls a day at most (default 300) |
-| `MASTODON_SERVER`, `MASTODON_TOKEN` | The owner's Mastodon account, used to read the hashtags anyone follows (read-only) |
-| `CURATOR_REGION` | Where "significant news" is judged from, e.g. `Perth, Australia` |
-| `CURATOR_DAILY_AT`, `TZ` | When the daily jobs run (default 04:30) |
-| `CURATOR_SCOUT_WEEKDAY` | Which day's daily run looks for new sources (0 = Monday; default 6, Sunday) |
-| `CURATOR_DATA` | The data folder (SQLite, feeds, backups); `/data` in the container |
-| `CURATOR_EXPORT_GIT_URL`, `CURATOR_EXPORT_USERS`, `FORGEJO_TOKEN` | Optional: a private git repo the chosen readers' profiles are exported to each day (the token is given to git per command, never stored in the clone) |
+A blank default means unset.
+
+| Variable | Default | |
+|---|---|---|
+| `CURATOR_PUBLIC_URL` | `http://localhost:8000` | Where it's served, e.g. `https://curator.example.org` |
+| `CURATOR_SITE` | `CURATOR_PUBLIC_URL` | Where the code lives: feeds link to it, and fetchers name it in their User-Agent |
+| `PORT` | `8000` | The port it listens on |
+| `OIDC_ISSUER`, `OIDC_CLIENT_ID` | unset, `curator` | Your sign-in provider and the reader app's client |
+| `CURATOR_SIGN_IN_LABEL` | `Sign in` | The sign-in button's text |
+| `CURATOR_OWNER` | `admin` | The admin's username |
+| `CURATOR_SECRET_KEY` | | A Fernet key, for Mastodon tokens at rest (`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`) |
+| `ANTHROPIC_API_KEY`, `JEV_API_KEY` | | Claude (profiles, source suggestions, and Haiku where Jev can't say whether a wrapper adds anything) and Jev (judging) |
+| `CURATOR_FOLLOW_MODEL`, `CURATOR_FOLLOW_HAIKU_DAILY` | `claude-haiku-5-5`, `300` | The model for that, and its calls a day at most |
+| `CURATOR_PROFILE_MODEL` | `claude-haiku-4-5` | The model that revises profiles |
+| `CURATOR_SCOUT_MODEL` | `claude-sonnet-5-5` | The model that suggests new sources |
+| `CURATOR_EMBED_MODEL` | `BAAI/bge-small-en-v1.5` | The embedding model (fastembed) that groups stories |
+| `CURATOR_SAME_STORY` | `0.87` | The similarity at which two items are one story |
+| `MASTODON_SERVER`, `MASTODON_TOKEN` | `mastodon.social`, unset | The owner's Mastodon account, used to read the hashtags anyone follows (read-only); the token becomes the owner's connection at start-up if they have none (needs `CURATOR_SECRET_KEY`) |
+| `CURATOR_AGENT_TOKEN` | | The owner's Mac agent token, set at start-up if they have none (the agent sends the same) |
+| `CURATOR_FEED_PATH` | | The owner's feed address, set once at start-up |
+| `INSTAGRAM_USER`, `INSTAGRAM_PASSWORD` | | An Instagram account, to read Instagram sources |
+| `CURATOR_REGION` | `Australia` | Where "significant news" is judged from, e.g. `Perth, Australia` |
+| `CURATOR_CYCLE_MINUTES` | `15` | How often the loop collects, judges and publishes |
+| `CURATOR_DAILY_AT`, `TZ` | `04:30`, `UTC` | When the daily jobs run, and in which time zone |
+| `CURATOR_SCOUT_WEEKDAY` | `6` | Which day's daily run looks for new sources (0 = Monday; 6, Sunday) |
+| `CURATOR_DATA` | `state/` in the checkout | The data folder (SQLite, feeds, backups); `/data` in the container |
+| `CURATOR_LEGACY_PROFILE` | `<CURATOR_DATA>/repo/profile` | A profile from before profiles moved into the database, imported once for the owner |
+| `CURATOR_EXPORT_GIT_URL`, `CURATOR_EXPORT_USERS`, `FORGEJO_TOKEN` | | Optional: a private git repo the chosen readers' profiles are exported to each day (the token is given to git per command, never stored in the clone) |
+| `CURATOR_GIT_EMAIL` | `curator@localhost` | The export's commit email |
+| `CURATOR_VERSION`, `CURATOR_BUILT` | | The deployed version and when it was built, for `/version.json` |
+
+The Mac agent (`agent/`) reads its own:
+
+| Variable | Default | |
+|---|---|---|
+| `CURATOR_URL` | | The curator to send to; unset, it only collects |
+| `CURATOR_AGENT_TOKEN` | | Its token (Settings → Mac agent in the reader app) |
+| `CURATOR_AGENT_HOME` | `~/Library/Application Support/curator-agent` | Its outbox and state |
+| `CURATOR_NEVER_COLLECT` | `~/Library/Application Support/curator-agent/never-collect.yaml` | Your never-collect list |
 
 On the Mac, secrets can come from the keychain instead (service `curator`,
 account = the variable name).

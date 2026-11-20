@@ -1,6 +1,8 @@
 """Read browsing history and Claude Code prompts since a cursor. Each reader
-returns (records, new_cursor). Records carry titles and URLs, never page
-contents."""
+returns (records, new_cursor). A visit carries its time, URL and title, never
+the page's contents; a prompt carries its time, the project folder's name and
+the text you typed (the first 2,000 characters, secrets redacted), never
+Claude's replies or tool output."""
 
 import json
 import re
