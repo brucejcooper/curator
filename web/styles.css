@@ -151,7 +151,6 @@ button { font: inherit; color: inherit; }
    drop, get a dashed one. */
 .status.curated { cursor: auto; border-left: 3px solid color-mix(in srgb, var(--accent) 55%, var(--surface)); }
 .status.curated.maybe { border-left-style: dashed; border-left-color: var(--muted); }
-.status.maybe:not(.curated) { border-left: 3px dashed var(--muted); }
 .curated-label { color: var(--muted); font-size: 0.85rem; margin-bottom: 0.4rem; }
 .source-icon { width: 44px; height: 44px; border-radius: 10px; display: grid; place-items: center; font-size: 1.4rem; background: var(--bg); flex: none; }
 .curated-title { display: block; margin-top: 0.5rem; color: inherit; text-decoration: none; font-size: 1.05rem; line-height: 1.3; }

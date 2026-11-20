@@ -1,9 +1,9 @@
 # The reader app
 
 The app you read the curator through (it began as Mastorss, a Mastodon reader
-that read the home timeline oldest to newest, like an RSS reader). Your
-Mastodon home timeline, filtered by the curator and merged with the articles
-it picked for you, read oldest to newest from where you left off. Static
+that read the home timeline oldest to newest, like an RSS reader). The
+stories the curator picked for you, read oldest to newest from where you
+left off. Static
 files with no build step, served by the curator at `/`; its only backend is
 the curator's `/api/` (see `../README.md`).
 
@@ -13,17 +13,19 @@ the curator's `/api/` (see `../README.md`).
   refreshing is single-flight.
 - **First visit**: a short interview; the curator writes your first profile
   from it.
-- **Timeline**: `GET /api/timeline?after=<id>` and `?before=<id>`. Entries
-  are Mastodon posts (`kind: "status"`, with the curator's verdict) and
-  articles (`kind: "article"`), in timeline-id order: Mastodon ids are
-  ms << 16, and each curated story carries a `sort_id` in the same space.
-  Only `end: true` means caught up; pages are often short. Without a
-  Mastodon connection the timeline is articles only.
+- **Timeline**: `GET /api/timeline?after=<id>` and `?before=<id>`. Every
+  entry is a curated story (`kind: "article"`; a post the curator picked is
+  one too, with its `poster`), in timeline-id order: each carries its
+  `sort_id` (Mastodon-style, ms << 16) as `id`. `end: true` means caught up
+  (a page shorter than asked for).
 - **Position**: kept on the server per reader (`PUT /api/position`, which
   never moves it back), plus a copy in `localStorage` for the moments it
   can't be reached. On start the further of the two wins.
-- **Reading actions**: 👍/👎 and 🔖 on every card; threads via
-  `GET /api/thread/<id>`. Replying, boosting and favouriting happen on your
+- **Reading actions**: 👍/👎 and 🔖 on every card.
+- **Mastodon posts** (`kind: "status"`, the post as Mastodon sends it) only
+  come in two places, with a Mastodon connection: your Mastodon bookmarks
+  (`GET /api/bookmarks`, its `posts`) and threads (`GET /api/thread/<id>`,
+  opened by tapping one). Replying, boosting and favouriting happen on your
   Mastodon server: ↗ See original.
 - **How the curator sees you**: your profile, every version and what changed,
   and editing it by hand (Settings).

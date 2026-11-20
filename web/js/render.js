@@ -242,11 +242,10 @@ function actionButton(label, icon, count, active, onToggle) {
 // Clicks on these open their own thing rather than the thread.
 const INTERACTIVE = 'a, button, summary, details.cw:not([open]), video, audio, input, textarea';
 
-// A Mastodon post, or null if one of your server-side filters hides it.
-// `onThread(status)` opens the conversation. `curation` (for timeline posts): { verdict, vote,
-// bookmarked, onVote(vote), onBookmark(on) }. Replying, boosting and
-// favouriting happen on your server: ↗ opens the post there.
-export function renderStatus(entry, { instance, onThread, focus = false, depth = 0, curation = null }) {
+// A Mastodon post (in a thread or your Mastodon bookmarks), or null if one of
+// your server-side filters hides it. `onThread(status)` opens the conversation.
+// Replying, boosting and favouriting happen on your server: ↗ opens the post there.
+export function renderStatus(entry, { instance, onThread, focus = false, depth = 0 }) {
   const s = entry.reblog || entry;
   const f = filterHit(s);
   if (f.hide) return null;
@@ -288,23 +287,11 @@ export function renderStatus(entry, { instance, onThread, focus = false, depth =
     body = el('details', { class: 'cw filtered' }, el('summary', { text: `Filtered: ${f.warn}` }), body);
   }
   article.append(body);
-  const verdict = curation?.verdict;
-  if (verdict?.lane === 'maybe') {
-    article.prepend(el('div', { class: 'curated-label' }, '🤔 Maybe: the curator isn\u2019t sure. Tell it with 👍 or 👎'));
-    article.classList.add('maybe');
-  }
-  const also = alsoCovered(verdict?.also);
-  if (also) body.append(also);
 
-  const footer = el('footer', {});
-  if (curation) {
-    footer.append(...voteButtons(article, curation.vote || 0, curation.onVote),
-      actionButton('Bookmark', '🔖', 0, curation.bookmarked, curation.onBookmark));
-  }
-  footer.append(el('a', { class: 'act see-original', href: links.status(s), target: '_blank', rel: 'noopener noreferrer',
-    title: `See the original on ${instance} (reply, boost, favourite)`, 'aria-label': `See the original on ${instance}` },
-  el('span', { class: 'icon', text: '↗' }), el('span', { class: 'label', text: 'See original' })));
-  article.append(footer);
+  article.append(el('footer', {},
+    el('a', { class: 'act see-original', href: links.status(s), target: '_blank', rel: 'noopener noreferrer',
+      title: `See the original on ${instance} (reply, boost, favourite)`, 'aria-label': `See the original on ${instance}` },
+    el('span', { class: 'icon', text: '↗' }), el('span', { class: 'label', text: 'See original' }))));
 
   // Tapping the post itself (not a link or button in it) opens the thread.
   if (!focus) {

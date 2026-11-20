@@ -523,27 +523,13 @@ class Reader {
     if (ok && this.pane.scrollTop < 1500) this.loadOlder();
   }
 
-  // A timeline entry: a Mastodon post (filtered and annotated by the curator)
-  // or an article it picked.
+  // A timeline entry: an article the curator picked (the only kind the
+  // timeline has; Mastodon posts only appear in threads and bookmarks).
   render(entry) {
-    if (entry.kind === 'status' && !this.me.mastodon) return null;
-    if (entry.kind === 'article') {
-      return renderCurated(entry, {
-        onVote: (it, vote) => this.api.vote({ item_id: it.item }, vote),
-        onBookmark: (it, on) => this.api.bookmark({ item_id: it.item }, on),
-        onOpen: (it) => this.api.event({ item_id: it.item }, 'open'),
-      });
-    }
-    return renderStatus(entry.status, {
-      instance: this.me.mastodon,
-      onThread: (s) => this.openThread(s),
-      curation: {
-        verdict: entry.verdict,
-        vote: entry.vote,
-        bookmarked: entry.bookmarked,
-        onVote: (vote) => this.api.vote({ status_id: entry.id }, vote),
-        onBookmark: (on) => this.api.bookmark({ status_id: entry.id }, on),
-      },
+    return renderCurated(entry, {
+      onVote: (it, vote) => this.api.vote({ item_id: it.item }, vote),
+      onBookmark: (it, on) => this.api.bookmark({ item_id: it.item }, on),
+      onOpen: (it) => this.api.event({ item_id: it.item }, 'open'),
     });
   }
 

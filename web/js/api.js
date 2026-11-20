@@ -304,7 +304,7 @@ export class Api {
     return (await this.request('/api/position', { method: 'PUT', body: { latest: true }, idempotent: true })).position;
   }
 
-  // `target` is { item_id } for an article or { status_id } for a post.
+  // `target` is { item_id }, an article's.
   vote(target, vote) {
     return this.request('/api/vote', { method: 'POST', body: { ...target, vote } });
   }

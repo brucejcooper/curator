@@ -16,9 +16,11 @@ const ISSUER = `${AUTH}/application/o/curator/`;
 const PIXEL = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==', 'base64');
 
 // ---------------------------------------------------------------- fake data
-// Mastodon posts have even ids 3000..3058; the curator's articles odd ids, so
-// placement can be checked exactly. 3020 misses the curator's bar (it never
-// arrives); 3014 is hidden by one of your Mastodon filters.
+// The timeline is the curator's articles only (curator/reader.py): plain ones
+// at even ids 3000..3058, the ones with something to check at odd ids.
+// Mastodon posts only come in threads and the Mastodon bookmarks: in the
+// thread of 2999, 5001 has a content warning, 5000 a link card, and 5002 is
+// hidden by one of your Mastodon filters.
 const acct = (i) => ({ id: `a${i}`, username: `user${i}`, acct: `user${i}@example.social`, display_name: `User ${i} :blob:`, avatar: 'https://cdn.example/avatar.png', avatar_static: 'https://cdn.example/avatar.png', emojis: [{ shortcode: 'blob', url: 'https://cdn.example/blob.png' }] });
 function status(id) {
   return {
@@ -26,12 +28,12 @@ function status(id) {
     created_at: new Date(Date.now() - (4000 - id) * 60000).toISOString(),
     account: acct(id % 7),
     content: `<p>Post number ${id} <a href="https://mastodon.au/tags/test" class="mention hashtag">#<span>test</span></a> <img src=x onerror="window.pwned=1"><script>window.pwned=1</script></p>`,
-    spoiler_text: id === 3016 ? 'spoilers' : '',
+    spoiler_text: id === 5001 ? 'spoilers' : '',
     sensitive: false, visibility: 'public', mentions: [], emojis: [], media_attachments: [],
     replies_count: 0, reblogs_count: 1, favourites_count: 2,
     url: `https://example.social/@x/${id}`, reblog: null,
-    filtered: id === 3014 ? [{ filter: { title: 'hidden', filter_action: 'hide' } }] : [],
-    card: id === 3018 ? { url: 'https://example.com/article', title: 'An article', description: 'Something to read', provider_name: 'Example' } : null,
+    filtered: id === 5002 ? [{ filter: { title: 'hidden', filter_action: 'hide' } }] : [],
+    card: id === 5000 ? { url: 'https://example.com/article', title: 'An article', description: 'Something to read', provider_name: 'Example' } : null,
   };
 }
 const article = (id, item, extra = {}) => ({
@@ -39,11 +41,14 @@ const article = (id, item, extra = {}) => ({
   summary: `Summary of ${item}`, image: null, published: new Date().toISOString(), author: 'A. Writer',
   source: 'rss:ABC News', lane: 'main', reason: 'Jev 0.90: Must read', also: [], ...extra,
 });
+// A plain article, with a link in its text.
+const plain = (id) => article(id, `p${id}`, { summary: `Story ${id}, more at https://example.org/p${id}.` });
+const plains = (from, count, step = 1) => Array.from({ length: count }, (_, n) => plain(from + step * n));
 const longPost = 'A post with a lot to say. '.repeat(40).trim();
 
 const state = {
-  statuses: Array.from({ length: 30 }, (_, n) => status(3000 + 2 * n)).filter((s) => s.id !== '3020'),
   articles: [
+    ...plains(3000, 30, 2),
     article(3007, 'read-one'),
     article(3013, 'between', { image: 'https://news.example/pic.jpg', summary: 'Summary of between. More at https://example.org/more.', also: [{ url: 'https://other.example/x', source: 'rss:The Verge' }],
       quote: { author: '@jn@c.im', name: 'Jordan', text: 'The quoted post.', url: 'https://c.im/@jn/1', image: null },
@@ -51,8 +56,7 @@ const state = {
         { url: 'https://hackaday.com/a', name: 'Hackaday', kind: 'article', author: '' }] }),
     article(3201, 'newest', { lane: 'maybe', title: 'A post with a lot to say. A post with a lot…', summary: longPost,
       source: 'mastodon:#homelab', author: '@ana@m.example', poster: { name: 'Ana', avatar: 'https://cdn.example/avatar.png' } }),
-  ],
-  verdicts: { 3022: { lane: 'maybe', also: [] }, 3024: { lane: 'main', also: [{ url: 'https://other.example/y', source: 'rss:9to5Mac' }] } },
+  ].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1)),
   position: '3010', // the reader's position on the server
   positionPuts: [],
   votes: {}, // key → vote
@@ -83,33 +87,17 @@ const state = {
 let tokenN = 0;
 const num = (i) => BigInt(i);
 
-const voteKey = (b) => (b.status_id ? `status:${b.status_id}` : b.item_id);
-function annotate(e) {
-  const key = e.kind === 'status' ? `status:${e.id}` : e.item;
-  return { ...e, vote: state.votes[key] || 0, bookmarked: state.bookmarks.has(key) };
-}
-const asEntry = (s) => ({ kind: 'status', id: s.id, status: s, item: `item-${s.id}`, verdict: state.verdicts[s.id] || { lane: 'main', also: [] } });
-const byId = (a, b) => (num(a.id) < num(b.id) ? -1 : 1);
+const annotate = (e) => ({ ...e, vote: state.votes[e.item] || 0, bookmarked: state.bookmarks.has(e.item) });
 
+// As the curator pages them (curator/reader.py: after, before).
 function timelineAfter(after, limit) {
-  // Never a full page (the curator drops posts that miss the bar after the limit).
-  const page = state.statuses.filter((s) => !after || num(s.id) > num(after)).slice(0, limit - 3);
-  const lo = after ? num(after) : (page.length ? num(page[0].id) - 1n : 0n);
-  const hi = page.length ? num(page.at(-1).id) : null;
-  const arts = state.articles.filter((a) => num(a.id) > lo && (hi == null || num(a.id) <= hi));
-  const items = [...page.map(asEntry), ...arts].sort(byId).map(annotate);
-  // Like the curator: the cursor covers the articles returned too.
-  const covered = [...page.map((s) => s.id), ...arts.map((a) => a.id), ...(after ? [after] : [])];
-  const cursor = covered.length ? covered.sort((a, b) => (num(a) < num(b) ? -1 : 1)).at(-1) : after;
-  return { items, cursor, end: !page.length };
+  const arts = state.articles.filter((a) => !after || num(a.id) > num(after)).slice(0, limit);
+  return { items: arts.map(annotate), cursor: arts.length ? arts.at(-1).id : after, end: arts.length < limit };
 }
 
 function timelineBefore(before, limit) {
-  const page = state.statuses.filter((s) => num(s.id) < num(before)).slice(-limit);
-  if (!page.length) return { items: [], cursor: before, end: true };
-  const arts = state.articles.filter((a) => num(a.id) >= num(page[0].id) && num(a.id) < num(before));
-  const items = [...page.map(asEntry), ...arts].sort(byId).map(annotate);
-  return { items, cursor: page[0].id, end: false };
+  const arts = state.articles.filter((a) => num(a.id) < num(before)).slice(-limit);
+  return { items: arts.map(annotate), cursor: arts.length ? arts[0].id : before, end: arts.length < limit };
 }
 
 const json = (route, body, status = 200) =>
@@ -214,21 +202,21 @@ async function fakes(ctx) {
     }
     if (url.pathname === '/api/position') {
       state.positionPuts.push(body);
-      if (body.latest) state.position = [...state.statuses, ...state.articles].sort(byId).at(-1).id;
+      if (body.latest) state.position = state.articles.at(-1).id;
       else if (num(body.position) > num(state.position || '0')) state.position = body.position;
       return json(route, { position: state.position });
     }
     if (url.pathname === '/api/vote') {
       state.voteCalls++;
       if (state.voteStalls) return stall();
-      state.votes[voteKey(body)] = body.vote;
+      state.votes[body.item_id] = body.vote;
       state.lastVote = body;
       return json(route, { ok: true });
     }
     if (url.pathname === '/api/bookmark') {
       state.bookmarkCalls.push(body);
-      if (body.on) state.bookmarks.add(voteKey(body));
-      else state.bookmarks.delete(voteKey(body));
+      if (body.on) state.bookmarks.add(body.item_id);
+      else state.bookmarks.delete(body.item_id);
       return json(route, { ok: true });
     }
     if (url.pathname === '/api/bookmarks') {
@@ -261,7 +249,8 @@ async function fakes(ctx) {
     }
     const thread = url.pathname.match(/^\/api\/thread\/(\d+)$/);
     if (thread) {
-      return json(route, { status: status(Number(thread[1])), ancestors: [status(2001)], descendants: [{ ...status(5000), in_reply_to_id: thread[1] }, { ...status(5001), in_reply_to_id: '5000' }] });
+      return json(route, { status: status(Number(thread[1])), ancestors: [status(2001)],
+        descendants: [{ ...status(5000), in_reply_to_id: thread[1] }, { ...status(5001), in_reply_to_id: '5000' }, { ...status(5002), in_reply_to_id: thread[1] }] });
     }
     return json(route, { error: 'not found' }, 404);
   });
@@ -300,7 +289,7 @@ await page.waitForSelector('#timeline article');
 assert.equal(new URL(page.url()).search, '', 'the code is cleared from the address');
 assert.equal(await page.textContent('#who'), 'Alex');
 
-// ---------------------------------------------------------------- the merged timeline
+// ---------------------------------------------------------------- the timeline
 const ids = () => page.$$eval('#timeline article', (a) => a.map((n) => n.dataset.id));
 const unreadIds = () => page.$$eval('#timeline article:not(.read)', (a) => a.map((n) => n.dataset.id));
 const firstUnreadOffset = () => page.evaluate(() => {
@@ -309,25 +298,12 @@ const firstUnreadOffset = () => page.evaluate(() => {
 });
 
 // Starts right after the server's position, read entries above, scrolled to the first unread.
-assert.deepEqual((await unreadIds()).slice(0, 3), ['3012', '3013', '3016'], 'starts after the position; 3014 hidden by a Mastodon filter');
+assert.deepEqual((await unreadIds()).slice(0, 3), ['3012', '3013', '3014'], 'starts after the position');
 assert.ok(Math.abs(await firstUnreadOffset()) < 2, 'scrolled to the first unread entry');
 let order = await ids();
-assert.ok(order.indexOf('3007') === order.indexOf('3006') + 1, 'a read article sits among the read posts');
-assert.ok(await page.$('article[data-id="3007"].curated.read'));
-assert.ok(order.indexOf('3013') === order.indexOf('3012') + 1, 'articles slot in between posts by id');
-assert.equal(await page.$('article[data-id="3020"]'), null, 'a post that missed the curator\'s bar never arrives');
-assert.equal(await page.evaluate(() => window.pwned), undefined, 'no script execution');
-assert.equal(await page.$('article img[src="x"]'), null, 'inline img stripped');
-assert.ok(await page.$('article .who img.emoji'), 'custom emoji rendered');
-assert.ok(await page.$('article[data-id="3016"] details.cw'), 'content warning rendered');
-
-// Mastodon posts: votes, bookmark and See original only.
-const post = 'article[data-id="3012"]';
-assert.equal(await page.$(`${post} button[aria-label="Reply"]`), null, 'no reply button: that happens on the server');
-assert.equal(await page.$eval(`${post} a.see-original`, (a) => a.href), 'https://mastodon.au/@user2@example.social/3012');
-await page.click(`${post} button[aria-label="More like this"]`);
-await page.waitForSelector(`${post} button[aria-label="More like this"][aria-pressed="true"]`);
-assert.deepEqual(state.lastVote, { status_id: '3012', vote: 1 }, 'votes on posts name the post');
+assert.deepEqual(order, [...order].sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1)), 'in timeline-id order');
+assert.ok(await page.$('article[data-id="3007"].curated.read'), 'read entries sit above');
+assert.equal(await page.$('#timeline article:not(.curated)'), null, 'the timeline is articles only');
 
 // Articles: picture, linked URLs, votes, bookmark, tap-through.
 const art = 'article[data-id="3013"]';
@@ -360,6 +336,26 @@ assert.deepEqual(state.events.at(-1), { item_id: 'between', kind: 'open' }, 'and
 await page.click('#open-bookmarks');
 await page.waitForSelector('#bookmarks-body article.curated');
 assert.match(await page.textContent('#bookmarks-body'), /Bookmarked here.*Article between.*Mastodon bookmarks.*Post number 2999/s);
+const kept = '#bookmarks-body article.curated[data-item="between"]';
+assert.equal(await page.getAttribute(`${kept} button[aria-label="Bookmark"]`, 'aria-pressed'), 'true', 'a bookmarked article shows as bookmarked');
+// A Mastodon post: rendered safely, with See original and nothing to reply with.
+const post = '#bookmarks-body article.status:not(.curated)';
+assert.equal(await page.getAttribute(post, 'data-id'), '2999');
+assert.equal(await page.evaluate(() => window.pwned), undefined, 'no script execution');
+assert.equal(await page.$(`${post} img[src="x"]`), null, 'inline img stripped');
+assert.ok(await page.$(`${post} .who img.emoji`), 'custom emoji rendered');
+assert.equal(await page.$(`${post} button[aria-label="Reply"]`), null, 'no reply button: that happens on the server');
+assert.equal(await page.$eval(`${post} a.see-original`, (a) => a.href), 'https://mastodon.au/@user3@example.social/2999');
+
+// Threads come from the curator: tapping a Mastodon post opens its thread.
+await page.click(`${post} .content`, { position: { x: 4, y: 4 } }); // the text, not the hashtag link in it
+await page.waitForSelector('#thread:not([hidden]) article.focus');
+assert.deepEqual(await page.$$eval('#thread-body article', (a) => a.map((n) => n.dataset.id)), ['2001', '2999', '5000', '5001'], '5002 hidden by a Mastodon filter');
+assert.ok(await page.$('#thread-body article[data-id="5001"].d2'), 'replies indented');
+assert.ok(await page.$('#thread-body article[data-id="5001"] details.cw'), 'content warning rendered');
+assert.ok(await page.$('#thread-body article[data-id="5000"] a.card'), 'link card rendered');
+await page.goBack();
+await page.waitForSelector('#thread', { state: 'hidden' });
 await page.goBack();
 await page.waitForSelector('#bookmarks', { state: 'hidden' });
 
@@ -381,14 +377,6 @@ await page.waitForSelector('#search-body >> text=Nothing you were shown matches'
 await page.goBack();
 await page.waitForSelector('#search', { state: 'hidden' });
 
-// Threads come from the curator.
-await page.click(`${post} .content`, { position: { x: 4, y: 4 } }); // the text, not the hashtag link in it
-await page.waitForSelector('#thread:not([hidden]) article.focus');
-assert.deepEqual(await page.$$eval('#thread-body article', (a) => a.map((n) => n.dataset.id)), ['2001', '3012', '5000', '5001']);
-assert.ok(await page.$('#thread-body article[data-id="5001"].d2'), 'replies indented');
-await page.goBack();
-await page.waitForSelector('#thread', { state: 'hidden' });
-
 // ---------------------------------------------------------------- reading
 for (let i = 0; i < 60; i++) {
   await page.mouse.move(200, 400);
@@ -396,12 +384,8 @@ for (let i = 0; i < 60; i++) {
   await page.waitForTimeout(40);
 }
 await page.waitForSelector('#end.caught-up');
-// The curator's notes on posts: maybe, other coverage, link cards.
-assert.match(await page.textContent('article[data-id="3022"] .curated-label'), /Maybe/);
-assert.match(await page.textContent('article[data-id="3024"] .also'), /Also covered by 9to5Mac/);
-assert.ok(await page.$('article[data-id="3018"] a.card'), 'link card rendered');
 order = await ids();
-assert.equal(order.at(-1), '3201', 'articles newer than every post come last');
+assert.equal(order.at(-1), '3201', 'the newest comes last');
 assert.ok(await page.$('article[data-id="3201"].curated.maybe'));
 // A post says who posted it first, then where it came from.
 assert.equal(await page.textContent('article[data-id="3201"] header .who strong'), 'Ana');
@@ -426,8 +410,7 @@ assert.equal(state.position, '3201', 'the position is saved on the server');
 assert.ok(state.positionPuts.length <= 4, `position saves are batched (${state.positionPuts.length})`);
 
 // New entries are picked up by the background check.
-state.statuses.push(status(3300));
-state.articles.push(article(3301, 'later'));
+state.articles.push(plain(3300), article(3301, 'later'));
 await page.clock.fastForward(2 * 60_000 + 1000);
 await page.waitForSelector('#timeline article[data-id="3301"]');
 assert.ok(await page.$('#timeline article[data-id="3300"]'));
@@ -463,7 +446,7 @@ await page.click('#copy-diagnostics');
 const report = await page.evaluate(() => navigator.clipboard.readText());
 assert.match(report, /^Reader diagnostics/);
 assert.ok(!/acc\d|ref\d/.test(report), 'no tokens in the report');
-assert.ok(!report.includes('Post number'), 'no post text in the report');
+assert.ok(!report.includes('Summary of') && !report.includes('Post number'), 'no article or post text in the report');
 // Start-up timing and memory, without the sign-in return's query string.
 // (This page's fake clock hides the browser's timings: see "a slow network".)
 assert.match(report, / boot sinceOriginMs=\d+ origin=[\d:.]+ nav=\w+ sw=\w+ visibility=visible nodes=\d+ /);
@@ -557,10 +540,9 @@ await ctx.close();
   await p.route('https://m.example/**', (r) => r.fulfill({ contentType: 'text/html', body: '<p>approve?</p>' }));
   await p.fill('#mastodon-server', 'm.example');
   await Promise.all([p.waitForURL(/m\.example\/oauth\/authorize/), p.click('#mastodon-go')]);
-  // Without Mastodon the timeline is articles only.
+  // Without Mastodon the timeline still loads.
   await p.goto(APP);
   await p.waitForSelector('#timeline article');
-  assert.equal(await p.$('#timeline article:not(.curated)'), null, 'no Mastodon posts without a connection');
   state.mastodon = 'mastodon.au';
   await c.close();
 }
@@ -605,7 +587,7 @@ await ctx.close();
   const unread = await p.$$eval('#timeline article:not(.read)', (a) => a.map((n) => n.dataset.id));
   assert.ok(unread.every((id) => BigInt(id) > BigInt(serverPos)), `starts from the furthest position, the server's (${serverPos}): ${unread}`);
   // Mark everything read: the server jumps to the newest entry.
-  state.statuses.push(status(3400));
+  state.articles.push(plain(3400));
   await p.click('#menu');
   p.once('dialog', (d) => d.accept());
   await Promise.all([p.waitForEvent('load'), p.click('#mark-all')]);
@@ -638,8 +620,7 @@ await ctx.close();
 // unseen entries were marked read in one go. Simulate that by dropping every
 // scrollBy: reading must still advance only a few entries per small scroll.
 {
-  state.statuses = Array.from({ length: 120 }, (_, n) => status(1000 + n));
-  state.articles = [];
+  state.articles = plains(1000, 120);
   state.position = '1000';
   const session = signedIn();
   const c = await newContext();
@@ -676,8 +657,7 @@ await ctx.close();
 // so the page has nowhere to go. The arrow in the bar goes back to the first
 // unread entry.
 {
-  state.statuses = Array.from({ length: 120 }, (_, n) => status(1000 + n));
-  state.articles = [];
+  state.articles = plains(1000, 120);
   state.position = '1040';
   const session = signedIn();
   const c = await newContext();
@@ -733,14 +713,16 @@ await ctx.close();
   }, [session]);
   const ip = await ios.newPage();
   await ip.goto(APP);
-  await ip.waitForSelector('#timeline article .content a.hashtag');
+  const link = '#timeline article .curated-summary a';
+  await ip.waitForSelector(link);
+  const href = await ip.getAttribute(link, 'href');
   assert.equal(await ip.evaluate(async () => (await import('./js/render.js')).safariUrl('https://example.com/a?b=1')), 'x-safari-https://example.com/a?b=1');
   await ip.click('#menu');
   assert.equal(await ip.isVisible('#safari-row'), true, 'setting shown on iOS');
   assert.equal(await ip.isChecked('#links-in-safari'), false, 'off by default');
   await ip.click('#settings-close');
   const defaultOpen = ip.waitForEvent('popup');
-  await ip.click('#timeline article .content a.hashtag');
+  await ip.click(link);
   await (await defaultOpen).close(); // a plain new-window open, not intercepted
   assert.deepEqual(await ip.evaluate(() => window.opened), []);
   await ip.click('#menu');
@@ -748,11 +730,11 @@ await ctx.close();
   await ip.click('#settings-close');
   let popup = false;
   ip.on('popup', () => (popup = true));
-  await ip.click('#timeline article .content a.hashtag');
+  await ip.click(link);
   await ip.waitForTimeout(300);
   assert.deepEqual(await ip.evaluate(() => window.opened), [], 'not opened in the in-app viewer straight away');
   await ip.waitForFunction(() => window.opened.length === 1, null, { timeout: 3000 });
-  assert.equal(await ip.evaluate(() => window.opened[0]), 'https://mastodon.au/tags/test', 'falls back when Safari does not take over');
+  assert.equal(await ip.evaluate(() => window.opened[0]), href, 'falls back when Safari does not take over');
   assert.equal(popup, false);
   await ios.close();
 }
@@ -1090,8 +1072,7 @@ await ctx.close();
 // server and offers Retry, instead of a spinner that never ends. A write is
 // never sent twice.
 {
-  state.statuses = Array.from({ length: 10 }, (_, n) => status(1000 + n));
-  state.articles = [];
+  state.articles = plains(1000, 10);
   state.position = '1005';
   const stale = { ...signedIn(), expires: Date.now() - 1000 }; // the night's expired token
   const dc = await newContext();
@@ -1115,7 +1096,7 @@ await ctx.close();
   };
 
   // One stalled request: the check goes through on the retry.
-  state.statuses.push(status(1100));
+  state.articles.push(plain(1100));
   state.timelineStalls = 1;
   let t0 = Date.now();
   await dp.click('#check-new');
@@ -1131,7 +1112,7 @@ await ctx.close();
   assert.ok(!/acc\d|ref\d|after=1/.test(log.split('Log (')[1].replace(/ after=\d+/g, '')), 'no tokens or query strings');
 
   // Stalled every time: "couldn't reach the server" within two timeouts, and Retry works once it's back.
-  state.statuses.push(status(1102));
+  state.articles.push(plain(1102));
   state.timelineStalls = Infinity;
   t0 = Date.now();
   await dp.click('#check-new');
