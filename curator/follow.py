@@ -29,7 +29,7 @@ import httpx
 
 from curator import articles, store
 from curator.canon import canonical_url, item_id, short_title
-from curator.collect import bluesky_posts, bsky_post, bsky_unwanted, full_text, mastodon_post, quoting
+from curator.posts import bluesky_posts, bsky_post, bsky_unwanted, full_text, mastodon_post, quoting
 from curator.images import POST_URL, preview_image
 from curator.links import followable, host, is_source, site
 from curator.secrets import get_secret

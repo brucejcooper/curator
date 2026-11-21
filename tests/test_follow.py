@@ -12,7 +12,8 @@ import pytest
 
 from curator import articles, follow, store
 from curator.canon import item_id
-from curator.collect import from_bsky, item
+from curator.items import item
+from curator.posts import from_bsky
 from curator.stories import ingest
 
 HACKADAY = "https://hackaday.com/2026/11/07/a-pen-plotter-from-a-dead-printer/"
@@ -297,7 +298,7 @@ def test_sites_behind_a_login_and_paywalls_are_not_followed(db, web, models, sim
 
 
 def quote_post(comment):
-    from curator.collect import from_status
+    from curator.posts import from_status
 
     quoted = {"id": "9", "created_at": "2026-11-07T08:00:00Z", "visibility": "public", "language": "en", "url": TOOT,
               "account": {"acct": "maker@chaos.social", "display_name": "Maker"}, "content": f"<p>{TOOT_TEXT}</p>"}
@@ -383,7 +384,7 @@ def favours_wrappers(monkeypatch):
 
 
 def store_toot(db):
-    from curator.collect import from_status
+    from curator.posts import from_status
 
     it = from_status(status(), "mastodon:#homeassistant")
     it["published"] = "2026-11-07T08:00:00+00:00"
@@ -495,7 +496,7 @@ def test_stories_without_wrappers_lead_as_before(db, apart):
 # ── A post's link in its text ────────────────────────────────────────────────
 
 def test_a_wrapper_post_with_only_a_text_link_points_there():
-    from curator.collect import mastodon_post
+    from curator.posts import mastodon_post
 
     post = mastodon_post(status(text=f'The build log: <a href="{HACKADAY}">hackaday.com/2026/11/07/a-pen…</a>'))
     assert post["card"]["url"] == HACKADAY and follow.post_hop(post)["next"] == HACKADAY

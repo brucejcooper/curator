@@ -19,7 +19,7 @@ import anthropic
 import yaml
 from pydantic import BaseModel, Field
 
-from curator import collect, people, store
+from curator import feeds, people, store
 from curator.catalogue import CATALOGUE
 from curator.mastodon import Mastodon
 from curator.secrets import get_secret
@@ -154,17 +154,17 @@ def render_questions(questions: list[JevQuestion]) -> str:
 
 def follow_moves(conn, learned: list[LearnedSource], dry_run: bool = False) -> list[str]:
     """Learned feeds that have answered only through permanent redirects for
-    collect.MOVE_SETTLED take their new address, here rather than by Claude,
+    feeds.MOVE_SETTLED take their new address, here rather than by Claude,
     and their fetch state (schedule, ETag) goes with them. Fixed sources are
     the reader's own: /status only flags them. Returns "old → new" for each."""
     moves = []
     for source in learned:
         state = store.get(conn, f"rss:{source.value}", {}) if source.kind == "rss" else {}
-        if not state.get("moved_to") or collect.now() - datetime.fromisoformat(state["moved_since"]) < collect.MOVE_SETTLED:
+        if not state.get("moved_to") or feeds.now() - datetime.fromisoformat(state["moved_since"]) < feeds.MOVE_SETTLED:
             continue
         old, source.value = source.value, state["moved_to"]
         if not dry_run and store.get(conn, f"rss:{source.value}") is None:
-            store.put(conn, f"rss:{source.value}", {k: v for k, v in state.items() if k not in collect.UPKEEP})
+            store.put(conn, f"rss:{source.value}", {k: v for k, v in state.items() if k not in feeds.UPKEEP})
         moves.append(f"{old} → {source.value}")
     return moves
 

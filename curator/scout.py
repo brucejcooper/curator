@@ -34,7 +34,9 @@ import numpy as np
 import yaml
 
 from curator import people, store
-from curator.collect import UA, from_bsky, from_status, json_feed, mastodon_client, parse_any, parse_feed
+from curator.feeds import json_feed, parse_any, parse_feed
+from curator.items import UA
+from curator.posts import from_bsky, from_status, mastodon_client
 from curator.config import OWNER
 from curator.judge import jev_score
 from curator.people import Profile, source_key

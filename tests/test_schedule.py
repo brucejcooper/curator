@@ -5,8 +5,8 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from curator import collect, store
-from curator.collect import due, schedule
+from curator import collect, feeds, store
+from curator.feeds import due, schedule
 
 NOW = datetime(2026, 11, 8, 6, 0, tzinfo=timezone.utc)
 H = timedelta(hours=1)
@@ -134,9 +134,10 @@ def test_only_feeds_that_are_due_are_fetched(db, monkeypatch):
     real = httpx.Client
     monkeypatch.setattr(collect.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
     monkeypatch.setattr(collect, "now", lambda: NOW)
+    monkeypatch.setattr(feeds, "now", lambda: NOW)
     monkeypatch.setattr(collect.instagram, "collect", lambda conn, handles: [])
     monkeypatch.setattr(collect.people, "mastodon", lambda conn, user: None)
-    store.put(db, "rss:https://blog.example/rss", {"next": collect.iso(NOW + H), "reason": "adaptive", "etag": '"v0"'})
+    store.put(db, "rss:https://blog.example/rss", {"next": feeds.iso(NOW + H), "reason": "adaptive", "etag": '"v0"'})
     tally: dict = {}
     found = collect.collect_all(db, [Reader()], tally)
     assert asked == ["https://new.example/rss"] and tally == {"feeds_fetched": 1, "feeds_skipped": 1}
@@ -148,7 +149,7 @@ def test_only_feeds_that_are_due_are_fetched(db, monkeypatch):
 def test_a_failed_fetch_is_scheduled_and_still_raised(db):
     http = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
     try:
-        collect.rss(db, http, {"url": "https://gone.example/rss", "name": "Gone"}, NOW)
+        feeds.rss(db, http, {"url": "https://gone.example/rss", "name": "Gone"}, NOW)
         raise AssertionError("expected an error")
     except httpx.HTTPStatusError:
         pass
@@ -170,7 +171,7 @@ def test_out_of_range_hints_are_capped_or_ignored():
 
 
 def test_any_success_is_read_as_a_feed(db, monkeypatch):
-    monkeypatch.setattr(collect, "now", lambda: NOW)
+    monkeypatch.setattr(feeds, "now", lambda: NOW)
     http = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(203, content=FEED)))
-    items = collect.rss(db, http, {"url": "https://proxied.example/rss", "name": "Proxied"}, NOW)
+    items = feeds.rss(db, http, {"url": "https://proxied.example/rss", "name": "Proxied"}, NOW)
     assert len(items) == 2 and store.get(db, "rss:https://proxied.example/rss")["last"] == "200-new"

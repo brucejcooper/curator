@@ -1,6 +1,6 @@
 """Judging a link: whether it can be read without signing in (`followable`)
 and whether it could be what a page or post points at (`is_source`). Shared
-by collect.py (a post's link in its text) and follow.py (a page's links)."""
+by posts.py (a post's link in its text) and follow.py (a page's links)."""
 
 import re
 from urllib.parse import urlsplit

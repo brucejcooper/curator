@@ -11,6 +11,7 @@ import sqlite3
 import numpy as np
 
 from curator.config import DATA, DB, OWNER
+from curator.sponsors import SPONSORED, same_name, sponsor_line
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -174,15 +175,11 @@ def migrate(conn: sqlite3.Connection) -> None:
                                 SELECT ?, id, jev, jev_score, local, local_score FROM items
                                 WHERE jev IS NOT NULL OR local IS NOT NULL""", (OWNER,))
                 conn.execute("UPDATE items SET traits = json_extract(jev, '$.answers') WHERE jev IS NOT NULL")
-        # Items collected before paid posts were dropped (collect.SPONSORED).
-        from curator.collect import SPONSORED
-
+        # Items collected before paid posts were dropped (sponsors.SPONSORED).
         conn.execute(f"""UPDATE items SET rule = 'sponsored (author "' || trim(author) || '")'
                          WHERE rule IS NULL AND lower(trim(author)) IN ({','.join('?' * len(SPONSORED))})""", sorted(SPONSORED))
-        # And sponsored columns (collect.sponsor_line); a site's own sponsor
+        # And sponsored columns (sponsors.sponsor_line); a site's own sponsor
         # line on an ordinary article leaves it be.
-        from curator.collect import same_name, sponsor_line
-
         for id_, source, summary in conn.execute(
                 """SELECT id, source, summary FROM items WHERE rule IS NULL AND source LIKE 'rss:%'
                    AND (summary LIKE '%brought to you by%' OR summary LIKE '%sponsored by%' OR summary LIKE '%presented by%')""").fetchall():

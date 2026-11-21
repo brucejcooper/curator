@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
-from curator import collect, people, profile_refresh, scout, store
+from curator import feeds, people, profile_refresh, scout, store
 from curator.profile_refresh import JevQuestion, LearnedSource, Option, Revision
 from curator.server import feed_rows
 
@@ -29,7 +29,7 @@ def serve(routes: dict) -> httpx.Client:
 
 def fetch(db, http, url="https://old.example/rss", at=None):
     try:
-        collect.rss(db, http, {"url": url, "name": "Blog"}, at or collect.now())
+        feeds.rss(db, http, {"url": url, "name": "Blog"}, at or feeds.now())
     except (httpx.HTTPError, ValueError):
         pass
     return store.get(db, f"rss:{url}")
@@ -42,7 +42,7 @@ def test_a_permanent_redirect_is_kept_as_a_move(db):
     s = fetch(db, moved)
     assert s["moved_to"] == "https://new.example/rss" and s["moved_since"] and s["last"] == "200-new"
     since = s["moved_since"]
-    s = fetch(db, moved, at=collect.now() + D)
+    s = fetch(db, moved, at=feeds.now() + D)
     assert s["moved_since"] == since  # the same move, still since the first time
     s = fetch(db, serve({"https://old.example/rss": (200, None)}))
     assert "moved_to" not in s and "moved_since" not in s
@@ -59,18 +59,18 @@ def test_a_temporary_redirect_is_not_a_move(db):
 
 
 def test_a_moved_feed_says_where_on_status(alex, db):
-    store.put(db, "rss:https://sky.example/rss", {"moved_to": "https://sky.example/new<rss>", "moved_since": collect.iso(collect.now())})
+    store.put(db, "rss:https://sky.example/rss", {"moved_to": "https://sky.example/new<rss>", "moved_since": feeds.iso(feeds.now())})
     assert "moved → https://sky.example/new&lt;rss&gt;" in feed_rows(db)
 
 
 # ── Dead ─────────────────────────────────────────────────────────────────────
 
 def test_a_feed_gone_for_a_week_is_flagged_and_any_answer_clears_it(alex, db):
-    url, start = "https://sky.example/rss", collect.now() - 8 * D
+    url, start = "https://sky.example/rss", feeds.now() - 8 * D
     gone = serve({url: (404, None)})
     for day in range(9):
         s = fetch(db, gone, url, start + day * D)
-    assert s["failing"] == "404" and s["failing_since"] == collect.iso(start) and s["errors"] == 9
+    assert s["failing"] == "404" and s["failing_since"] == feeds.iso(start) and s["errors"] == 9
     rows = feed_rows(db)
     assert "dead? 404 since" in rows and rows.index("Sky News Feed") < rows.index("Garden Blog")  # first
     s = fetch(db, serve({url: (200, None)}), url)
@@ -78,7 +78,7 @@ def test_a_feed_gone_for_a_week_is_flagged_and_any_answer_clears_it(alex, db):
 
 
 def test_a_new_failure_is_not_yet_dead(alex, db):
-    s = fetch(db, serve({"https://sky.example/rss": (410, None)}), "https://sky.example/rss", collect.now() - 3 * D)
+    s = fetch(db, serve({"https://sky.example/rss": (410, None)}), "https://sky.example/rss", feeds.now() - 3 * D)
     assert s["failing"] == "410" and "dead?" not in feed_rows(db)
 
 
@@ -89,14 +89,14 @@ def test_not_a_feed_starts_the_clock_but_a_503_does_not(db):
     s = fetch(db, html)
     assert s["failing"] == "not a feed" and s["failing_since"]
     since = s["failing_since"]
-    s = fetch(db, serve({"https://old.example/rss": (503, None)}), at=collect.now() + D)
+    s = fetch(db, serve({"https://old.example/rss": (503, None)}), at=feeds.now() + D)
     assert s["failing_since"] == since  # a passing error neither starts nor stops it
 
 
 # ── The daily revision follows a learned feed ────────────────────────────────
 
 def test_the_revision_moves_a_learned_feed_after_a_week(alex, db, monkeypatch):
-    now = collect.now()
+    now = feeds.now()
     learned = [
         {"kind": "rss", "value": "https://settled.example/rss", "reason": "r", "added": "2026-10-01"},
         {"kind": "rss", "value": "https://recent.example/rss", "reason": "r", "added": "2026-10-01"},
@@ -104,11 +104,11 @@ def test_the_revision_moves_a_learned_feed_after_a_week(alex, db, monkeypatch):
     people.add_version(db, "alex", "test", "learned", alex.profile_md,
                        people.edit_learned(alex.sources_yaml, lambda _: learned), alex.questions_yaml)
     store.put(db, "rss:https://settled.example/rss", {"etag": '"e"', "next": "x", "moved_to": "https://settled.example/feed",
-                                                      "moved_since": collect.iso(now - 8 * D)})
+                                                      "moved_since": feeds.iso(now - 8 * D)})
     store.put(db, "rss:https://recent.example/rss", {"moved_to": "https://recent.example/feed",
-                                                     "moved_since": collect.iso(now - 2 * D)})
+                                                     "moved_since": feeds.iso(now - 2 * D)})
     # A fixed source that has moved: only flagged, never rewritten.
-    store.put(db, "rss:https://sky.example/rss", {"moved_to": "https://sky.example/feed", "moved_since": collect.iso(now - 30 * D)})
+    store.put(db, "rss:https://sky.example/rss", {"moved_to": "https://sky.example/feed", "moved_since": feeds.iso(now - 30 * D)})
     db.commit()
 
     def claude(system, prompt, output):  # keeps everything as it was
@@ -147,25 +147,25 @@ def json_feed_11(published: datetime) -> bytes:
 
 @pytest.mark.parametrize("ctype", ["application/feed+json", "text/plain"])
 def test_a_json_feed_is_read_like_any_other(db, ctype):
-    published = (collect.now() - timedelta(hours=2)).replace(microsecond=0)
+    published = (feeds.now() - timedelta(hours=2)).replace(microsecond=0)
     http = httpx.Client(transport=httpx.MockTransport(
         lambda r: httpx.Response(200, content=b"\n " + json_feed_11(published), headers={"content-type": ctype})))
-    items = collect.rss(db, http, {"url": "https://json.example/feed.json", "name": "Jason"})
+    items = feeds.rss(db, http, {"url": "https://json.example/feed.json", "name": "Jason"})
     first, second = items
     assert (first["url"], first["title"], first["author"], first["summary"]) == (
         "https://json.example/1", "Hello", "Jason", "Hi there")
-    assert first["published"] == collect.iso(published) and first["image"] == "https://json.example/1.png"
+    assert first["published"] == feeds.iso(published) and first["image"] == "https://json.example/1.png"
     assert second["url"] == "https://elsewhere.example/a" and second["summary"] == "A <short> note"
-    assert second["author"] == "Ada" and second["published"] == collect.iso(published)
+    assert second["author"] == "Ada" and second["published"] == feeds.iso(published)
     assert store.get(db, "rss:https://json.example/feed.json")["last"] == "200-new"
 
 
 def test_a_json_feed_1_0_works_too():
-    published = collect.now() - timedelta(hours=1)
+    published = feeds.now() - timedelta(hours=1)
     doc = json.dumps({"version": "https://jsonfeed.org/version/1", "title": "Old",
                       "items": [{"id": "a", "url": "https://old.example/a", "title": "A", "summary": "Short",
                                  "date_published": published.isoformat(), "author": {"name": "Ada"}}]}).encode()
-    [it] = collect.parse_feed(doc, "Old", content_type="application/json")
+    [it] = feeds.parse_feed(doc, "Old", content_type="application/json")
     assert (it["url"], it["title"], it["author"], it["summary"]) == ("https://old.example/a", "A", "Ada", "Short")
 
 
@@ -174,7 +174,7 @@ def test_json_that_is_no_json_feed_is_not_a_feed(db):
         http = httpx.Client(transport=httpx.MockTransport(
             lambda r, body=body: httpx.Response(200, content=body, headers={"content-type": "application/json"})))
         with pytest.raises(ValueError, match="not a feed"):
-            collect.rss(db, http, {"url": "https://api.example/x", "name": "X"})
+            feeds.rss(db, http, {"url": "https://api.example/x", "name": "X"})
 
 
 def test_a_site_s_json_feed_is_found():
@@ -182,7 +182,7 @@ def test_a_site_s_json_feed_is_found():
     http = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=page, headers={"content-type": "text/html"})))
     assert scout.find_feed(http, "blog.example") == "https://blog.example/feed.json"
     # Not advertised: found in its usual place.
-    doc = json_feed_11(collect.now())
+    doc = json_feed_11(feeds.now())
     http = httpx.Client(transport=httpx.MockTransport(
         lambda r: httpx.Response(200, content=doc) if r.url.path == "/feed.json"
         else httpx.Response(200, text="<html></html>", headers={"content-type": "text/html"}) if r.url.path == "/"

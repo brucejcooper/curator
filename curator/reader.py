@@ -11,7 +11,7 @@ import logging
 import httpx
 
 from curator import people, store
-from curator.collect import mastodon_client
+from curator.posts import mastodon_client
 from curator.people import Profile
 from curator.publish import edition_key, json_feed, timeline
 

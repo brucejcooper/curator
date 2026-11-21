@@ -1,7 +1,7 @@
 import numpy as np
 
 from curator.canon import canonical_url, item_id, title_key
-from curator.collect import from_status
+from curator.posts import from_status
 from curator.judge import jev_score
 from curator.stories import candidates, find_story
 
@@ -109,7 +109,7 @@ def mastodon_with(timeline, contexts):
 
 
 def test_mastodon_reply_becomes_its_conversation_root():
-    from curator.collect import mastodon
+    from curator.posts import mastodon
 
     root = toot("1", "Root: " + LONG)
     timeline = [toot("3", "reply two " + LONG, reply_to="2"), toot("2", "reply one " + LONG, reply_to="1")]
@@ -119,7 +119,7 @@ def test_mastodon_reply_becomes_its_conversation_root():
 
 
 def test_mastodon_stale_or_unseen_roots_are_dropped():
-    from curator.collect import mastodon
+    from curator.posts import mastodon
 
     timeline = [toot("5", "reply " + LONG, reply_to="4"), toot("7", "reply " + LONG, reply_to="6")]
     items = mastodon(kv_conn(), mastodon_with(timeline, {"5": [toot("4", "old " + LONG, age_days=30)]}), "/t", "m", {})
@@ -127,7 +127,7 @@ def test_mastodon_stale_or_unseen_roots_are_dropped():
 
 
 def test_mastodon_reply_sharing_a_link_stays_an_article():
-    from curator.collect import mastodon
+    from curator.posts import mastodon
 
     card = {"url": "https://news.example/a", "type": "link", "title": "An article", "description": "d"}
     items = mastodon(kv_conn(), mastodon_with([toot("9", "look", reply_to="8", card=card)], {}), "/t", "m", {})
@@ -135,7 +135,7 @@ def test_mastodon_reply_sharing_a_link_stays_an_article():
 
 
 def test_bluesky_reply_becomes_thread_root():
-    from curator.collect import bluesky
+    from curator.posts import bluesky
 
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     root = {"uri": "at://did:a/app.bsky.feed.post/root", "author": {"handle": "a.bsky.social"}, "labels": [],
@@ -176,7 +176,7 @@ def test_preview_image_from_meta_tags():
 
 
 def test_rss_image_prefers_largest_media():
-    from curator.collect import rss_image
+    from curator.feeds import rss_image
 
     e = {"media_content": [{"url": "https://i/small.jpg", "width": "100", "medium": "image"},
                            {"url": "https://i/big.jpg", "width": "1200", "medium": "image"}]}
@@ -351,7 +351,7 @@ def test_a_quote_post_carries_what_it_quotes():
     gone = from_status({**status, "quote": {"state": "deleted", "quoted_status": None}}, "mastodon:home:x", home=True)
     assert "RE: c.im/@jn/2" in gone["summary"] and gone["quote"] is None
 
-    from curator.collect import from_bsky
+    from curator.posts import from_bsky
 
     post = {"uri": "at://did/app.bsky.feed.post/abc", "author": {"handle": "sam.bsky.social"},
             "record": {"text": "Exactly this.", "createdAt": "2026-10-08T23:00:00Z", "langs": ["en"]},
@@ -381,7 +381,7 @@ def test_a_reader_gets_a_version_from_their_own_sources(alex, db):
 
 
 def test_a_comics_hover_text_is_kept_and_posts_say_who_posted():
-    from curator.collect import parse_feed
+    from curator.feeds import parse_feed
 
     atom = b"""<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom"><title>xkcd.com</title>
       <entry><title>Juice</title><link href="https://xkcd.com/3308/"/><updated>2099-01-01T00:00:00Z</updated>
@@ -416,7 +416,7 @@ NEWS = ("Apple releases iOS 26.1 with Liquid Glass tweaks", "Ryan Christoffel", 
 
 
 def test_posts_labelled_sponsored_are_dropped_for_everyone():
-    from curator.collect import parse_feed
+    from curator.feeds import parse_feed
 
     sponsored, news = parse_feed(nine_to_five(COPILOT, NEWS), "9to5Mac")
     assert sponsored["rule"] == 'sponsored (author "Sponsored Post")'
@@ -439,7 +439,7 @@ def test_posts_labelled_sponsored_are_dropped_for_everyone():
 
 
 def test_a_sponsored_post_is_kept_but_never_published(alex, db, monkeypatch):
-    from curator.collect import parse_feed
+    from curator.feeds import parse_feed
     from curator.publish import select
     from curator.stories import ingest
 
@@ -492,7 +492,7 @@ def nine_to_five_text(*descriptions, site="9to5Mac") -> bytes:
 
 
 def test_sponsored_columns_are_dropped_and_site_sponsor_lines_cut():
-    from curator.collect import parse_feed
+    from curator.feeds import parse_feed
 
     work, bite, tello, news, later = parse_feed(nine_to_five_text(APPLE_AT_WORK, SECURITY_BITE, TELLO, PLAIN_NEWS, LATER), "9to5Mac")
     assert work["rule"] == 'sponsored (column "Apple @ Work")'
@@ -614,7 +614,7 @@ def linking(*uris, embed=None):
 
 
 def test_bruces_bluesky_post_with_only_a_text_link_is_the_article():
-    from curator.collect import from_bsky
+    from curator.posts import from_bsky
 
     it = from_bsky(SUDO_POST, "bluesky:#homelab")
     assert it["url"] == SUDO
@@ -624,7 +624,7 @@ def test_bruces_bluesky_post_with_only_a_text_link_is_the_article():
 
 
 def test_a_text_link_counts_only_if_its_the_one_source():
-    from curator.collect import from_bsky
+    from curator.posts import from_bsky
 
     one = "https://blog.example/post?utm_source=bsky"
     assert from_bsky(linking(one, "https://blog.example/post/"), "b")["url"] == one  # the same page twice
@@ -635,7 +635,7 @@ def test_a_text_link_counts_only_if_its_the_one_source():
 
 
 def test_a_real_card_wins_over_a_text_link():
-    from curator.collect import from_bsky
+    from curator.posts import from_bsky
 
     card = {"$type": "app.bsky.embed.external#view", "external": {"uri": "https://news.example/a", "title": "News", "description": "d"}}
     it = from_bsky(linking(SUDO, embed=card), "b")

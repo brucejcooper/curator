@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
-from curator import collect, pipeline, social, store
+from curator import collect, feeds, items, pipeline, posts, social, store
 from curator.social import SSE, Social, Stream, TagPoll
 
 LONG = "a long enough post about home automation and ESPHome sensors " * 2
@@ -120,11 +120,11 @@ def test_backoff_doubles_with_jitter_and_honours_retry_after():
 
 
 def test_cursor_never_moves_back(db):
-    collect.advance(db, "mastodon:#x", "200")
+    posts.advance(db, "mastodon:#x", "200")
     for sid in ("199", "99", "1e9", "", None, "-5", "300 ", "9" * 40, 12345):
-        collect.advance(db, "mastodon:#x", sid)
+        posts.advance(db, "mastodon:#x", sid)
     assert store.get(db, "since:mastodon:#x") == "200"
-    collect.advance(db, "mastodon:#x", "1000")
+    posts.advance(db, "mastodon:#x", "1000")
     assert store.get(db, "since:mastodon:#x") == "1000"
 
 
@@ -175,21 +175,21 @@ def test_a_failing_tag_backs_off_and_the_others_still_run(db, mocked):
 @pytest.mark.parametrize("value", ["inf", "nan", "1e999", "-1", "99999999999", "soon", "Mon, 99 Foo 2026"])
 def test_retry_after_from_a_server_stays_bounded(value):
     t = TagPoll("x")
-    t.failed(datetime.now(timezone.utc), "429", collect.retry_after(httpx.Headers({"retry-after": value}), collect.now()))
+    t.failed(datetime.now(timezone.utc), "429", feeds.retry_after(httpx.Headers({"retry-after": value}), items.now()))
     assert math.isfinite(t.backoff) and social.BLUESKY_EVERY * 2 <= t.backoff <= social.BLUESKY_MAX_BACKOFF
 
 
 def test_bluesky_dates_from_posts_are_checked(db):
     stamp = lambda **ago: (datetime.now(timezone.utc) - timedelta(**ago)).isoformat().replace("+00:00", "Z")
-    assert collect.bsky_time(stamp(hours=1)) and collect.bsky_time(stamp(minutes=-1))  # a clock a minute fast
+    assert posts.bsky_time(stamp(hours=1)) and posts.bsky_time(stamp(minutes=-1))  # a clock a minute fast
     for bad in ("2999-01-01T00:00:00Z", stamp(hours=-1), "yesterday", "", None, 5, "9" * 100, "nan"):
-        assert collect.bsky_time(bad) is None
+        assert posts.bsky_time(bad) is None
     post = lambda when: {"record": {"createdAt": when}}
     hour_ago = stamp(hours=1)
-    kept = collect.bsky_since(db, "bluesky:x", [post("2999-01-01T00:00:00Z"), post(hour_ago), "junk", post(None)])
+    kept = posts.bsky_since(db, "bluesky:x", [post("2999-01-01T00:00:00Z"), post(hour_ago), "junk", post(None)])
     assert kept == [post(hour_ago)]
     assert store.get(db, "bluesky:x") == hour_ago  # not held in 2999
-    assert collect.bsky_since(db, "bluesky:x", [post(hour_ago.replace("Z", "+00:00"))]) == []
+    assert posts.bsky_since(db, "bluesky:x", [post(hour_ago.replace("Z", "+00:00"))]) == []
 
 
 # ── The social cycle ─────────────────────────────────────────────────────────
@@ -224,7 +224,7 @@ def test_the_social_cycle_publishes_only_the_readers_it_reaches(db, monkeypatch)
 
     def ingest(conn, found, tally=None):
         for it in found:
-            conn.execute("INSERT INTO sightings VALUES (?, ?, ?, ?)", (it["url"], it["source"], it["url"], collect.iso(collect.now())))
+            conn.execute("INSERT INTO sightings VALUES (?, ?, ?, ?)", (it["url"], it["source"], it["url"], items.iso(items.now())))
         return [it["url"] for it in found]
 
     judged, published = [], []
@@ -252,13 +252,13 @@ def test_the_cycle_polls_only_what_isnt_live(db, mocked, monkeypatch):
     monkeypatch.setattr(collect.instagram, "collect", lambda conn, handles: [])
     monkeypatch.setattr(collect.people, "mastodon", lambda conn, user: ("m.example", "sekrit", "1"))
     live = Social()
-    long_ago = collect.now() - timedelta(minutes=6)
-    for tag, connected, since in (("up", True, long_ago), ("down", False, long_ago), ("starting", False, collect.now())):
+    long_ago = items.now() - timedelta(minutes=6)
+    for tag, connected, since in (("up", True, long_ago), ("down", False, long_ago), ("starting", False, items.now())):
         s = Stream(f"mastodon:#{tag}", "m.example", "sekrit", "", {}, "")
         s.connected, s.since = connected, since
         live.streams[s.source] = s
     home = Stream("mastodon:home:alex", "m.example", "sekrit", "", {}, "", "alex")
-    home.since = collect.now() - timedelta(minutes=4)  # down, but not for long
+    home.since = items.now() - timedelta(minutes=4)  # down, but not for long
     live.streams[home.source] = home
     live.tags = {"sky": TagPoll("sky")}
     collect.collect_all(db, [Reader()], {}, live)

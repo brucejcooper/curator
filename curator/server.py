@@ -30,7 +30,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from curator import follow, instagram, mastodon_connect, people, reader, shell, store
 from curator.auth import AuthUnavailable, User, user_from_token
-from curator.collect import DEAD_AFTER, shared_sources
+from curator.collect import shared_sources
+from curator.feeds import DEAD_AFTER
 from curator.config import PUBLIC_URL
 from curator.people import Profile
 from curator.publish import feed_folder

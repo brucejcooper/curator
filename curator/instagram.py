@@ -18,6 +18,7 @@ import httpx
 from curator import store
 from curator.canon import short_title
 from curator.config import DATA, PUBLIC_URL
+from curator.items import item
 
 log = logging.getLogger(__name__)
 MEDIA = DATA / "media"
@@ -106,8 +107,6 @@ def save(http: httpx.Client, url: str | None, name: str, refresh: bool = False) 
 
 
 def from_post(post, handle: str, poster: dict, http: httpx.Client) -> dict:
-    from curator.collect import item
-
     caption = (post.caption or "").strip()
     it = item(f"https://www.instagram.com/p/{post.shortcode}/", short_title(caption) if caption else f"{poster['name'] or handle} on Instagram",
               caption, f"instagram:@{handle}", f"@{handle}", post.date_utc.replace(tzinfo=timezone.utc), always_show=True)
