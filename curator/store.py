@@ -81,10 +81,6 @@ CREATE TABLE IF NOT EXISTS user_votes (user TEXT, item_id TEXT, vote INTEGER, ti
 CREATE TABLE IF NOT EXISTS user_bookmarks (user TEXT, item_id TEXT, time TEXT, PRIMARY KEY (user, item_id));
 CREATE TABLE IF NOT EXISTS positions (user TEXT PRIMARY KEY, position TEXT, updated TEXT);  -- read up to (a timeline id)
 CREATE TABLE IF NOT EXISTS events (item_id TEXT, kind TEXT, time TEXT, user TEXT);
-CREATE TABLE IF NOT EXISTS home_posts (  -- a post in someone's Mastodon home timeline → its item
-  user TEXT, status_id TEXT, item_id TEXT, seen TEXT,
-  PRIMARY KEY (user, status_id)
-);
 CREATE TABLE IF NOT EXISTS agent_events (id INTEGER PRIMARY KEY, source TEXT, time TEXT, host TEXT, body TEXT, user TEXT);
 CREATE INDEX IF NOT EXISTS agent_events_time ON agent_events(time);
 CREATE TABLE IF NOT EXISTS never_collect (user TEXT, kind TEXT, value TEXT, PRIMARY KEY (user, kind, value));  -- from each agent, for purging
@@ -202,11 +198,8 @@ def migrate(conn: sqlite3.Connection) -> None:
     if "agent_events" in tables and "user" not in columns(conn, "agent_events"):
         conn.execute("ALTER TABLE agent_events ADD COLUMN user TEXT")
         conn.execute("UPDATE agent_events SET user = ?", (OWNER,))
-    if "home_posts" in tables and "user" not in columns(conn, "home_posts"):
-        conn.execute("ALTER TABLE home_posts RENAME TO home_posts_old")
-        conn.execute("CREATE TABLE home_posts (user TEXT, status_id TEXT, item_id TEXT, seen TEXT, PRIMARY KEY (user, status_id))")
-        conn.execute("INSERT INTO home_posts SELECT ?, status_id, item_id, seen FROM home_posts_old", (OWNER,))
-        conn.execute("DROP TABLE home_posts_old")
+    # Mastodon post → item, for votes by status id (gone since the app stopped sending them).
+    conn.execute("DROP TABLE IF EXISTS home_posts")
     if "feed_history" in tables and "feed_lane" not in columns(conn, "feed_history"):
         for col in ("feed_lane TEXT", "sort_id TEXT", "reason TEXT", "trial TEXT", "story_jev REAL", "story_local REAL"):
             conn.execute(f"ALTER TABLE feed_history ADD COLUMN {col}")

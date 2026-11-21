@@ -18,7 +18,7 @@ import httpx
 import yaml
 
 from curator import instagram, people, store
-from curator.canon import item_id, plain, short_title
+from curator.canon import plain, short_title
 from curator.config import CYCLE, OWNER, USER_AGENT
 from curator.links import host, one_source
 
@@ -582,13 +582,10 @@ def advance(conn, source: str, sid) -> None:
 
 
 def statuses_items(http: httpx.Client, statuses: list[dict], source: str, roots: dict,
-                   home_map: list | None = None) -> list[dict]:
+                   home: bool = False) -> list[dict]:
     """Items from statuses, however they came (a timeline poll or a stream).
-    For a home timeline, `home_map` collects (status id, item id) so the
-    reader app's questions about those posts are answered without another
-    fetch."""
+    `home`: they are from a reader's own home timeline (see from_status)."""
     items = []
-    home = home_map is not None
     for status in statuses:
         s = status.get("reblog") or status
         if s.get("in_reply_to_id") and not has_link_card(s):
@@ -597,18 +594,10 @@ def statuses_items(http: httpx.Client, statuses: list[dict], source: str, roots:
                 continue
         if it := from_status(s, source, home=home):
             items.append(it)
-            if home:
-                home_map.append((status["id"], item_id(it["url"])))
     return items
 
 
-def record_home(conn, user: str, home_map: list) -> None:
-    stamp = iso(now())
-    conn.executemany("INSERT OR IGNORE INTO home_posts VALUES (?, ?, ?, ?)", [(user, sid, iid, stamp) for sid, iid in home_map])
-    conn.commit()
-
-
-def mastodon(conn, http: httpx.Client, path: str, source: str, roots: dict, home_map: list | None = None) -> list[dict]:
+def mastodon(conn, http: httpx.Client, path: str, source: str, roots: dict, home: bool = False) -> list[dict]:
     """A timeline's new posts since its cursor (see statuses_items)."""
     since = status_id(store.get(conn, f"since:{source}"))
     params = {"limit": 40, **({"since_id": since} if since else {})}
@@ -619,7 +608,7 @@ def mastodon(conn, http: httpx.Client, path: str, source: str, roots: dict, home
         raise ValueError(f"{path}: not a list of statuses")
     if statuses:
         advance(conn, source, statuses[0].get("id"))
-    return statuses_items(http, statuses, source, roots, home_map)
+    return statuses_items(http, statuses, source, roots, home)
 
 
 def mastodon_account_id(conn, http: httpx.Client, acct: str) -> str | None:
@@ -842,12 +831,10 @@ def collect_all(conn, profiles: list, tally: dict | None = None, live=None) -> l
             continue
         if live is not None:
             log.info("home timeline for %s: no stream up, polled instead", p.user)
-        home_map: list = []
         with mastodon_client(creds[0], creds[1]) as http:
             try:
-                found += mastodon(conn, http, "/api/v1/timelines/home", source, {}, home_map)
+                found += mastodon(conn, http, "/api/v1/timelines/home", source, {}, home=True)
             except (httpx.HTTPError, ValueError) as e:
                 log.warning("home timeline for %s: %s", p.user, e)
-        record_home(conn, p.user, home_map)
     conn.commit()
     return found

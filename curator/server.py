@@ -145,7 +145,7 @@ def position(conn, who: Who, request, body):
 
 
 def vote(conn, who: Who, request, body):
-    """{item_id | status_id, vote: 1 | -1 | 0}. 0 clears a vote."""
+    """{item_id, vote: 1 | -1 | 0}. 0 clears a vote."""
     value = int(body.get("vote", 0))
     if value not in (-1, 0, 1):
         return JSONResponse({"error": "vote must be -1, 0 or 1"}, status_code=422)
@@ -159,7 +159,7 @@ def vote(conn, who: Who, request, body):
 
 
 def bookmark(conn, who: Who, request, body):
-    """{item_id | status_id, on: true | false}. A bookmark is also a strong 👍."""
+    """{item_id, on: true | false}. A bookmark is also a strong 👍."""
     item = reader.resolve(conn, who.profile, body)
     if not item:
         return JSONResponse({"error": "unknown item"}, status_code=404)
@@ -186,7 +186,7 @@ def search(conn, who: Who, request, body):
 
 
 def event(conn, who: Who, request, body):
-    """{item_id | status_id, kind}. "open" (following the link) counts for more than a 👍."""
+    """{item_id, kind}. "open" (following the link) counts for more than a 👍."""
     item = str(body.get("item_id") or "") or (reader.resolve(conn, who.profile, body) or "")
     conn.execute("INSERT INTO events (item_id, kind, time, user) VALUES (?, ?, ?, ?)", (item, str(body.get("kind", ""))[:20], now(), who.id))
     conn.commit()
@@ -306,7 +306,6 @@ def mastodon_start(conn, who: Who, request, body):
 
 def mastodon_stop(conn, who: Who, request, body):
     people.set_mastodon(conn, who.id, None, None, None)
-    conn.execute("DELETE FROM home_posts WHERE user = ?", (who.id,))
     conn.commit()
     changed(request, who)
     return {"ok": True}

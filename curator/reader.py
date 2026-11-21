@@ -12,7 +12,6 @@ import httpx
 
 from curator import people, store
 from curator.collect import mastodon_client
-from curator.home import item_for_status
 from curator.people import Profile
 from curator.publish import edition_key, json_feed, timeline
 
@@ -156,9 +155,6 @@ def bookmarks(conn, user: str) -> dict:
 
 
 def resolve(conn, profile: Profile, body: dict) -> str | None:
-    """The item a request is about: `item_id`, or `status_id` for a post in
-    the reader's home timeline (judged on the spot if new)."""
-    if body.get("status_id"):
-        return item_for_status(conn, profile, str(body["status_id"]))
+    """The item a request is about, by its `item_id`."""
     item = str(body.get("item_id", ""))
     return item if conn.execute("SELECT 1 FROM items WHERE id = ?", (item,)).fetchone() else None

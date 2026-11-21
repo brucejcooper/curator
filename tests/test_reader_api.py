@@ -85,6 +85,8 @@ def test_votes_are_per_reader(client, db):
     mine = {e["id"]: e.get("vote") for e in client.get("/api/timeline?after=999", headers=auth()).json()["items"]}
     assert mine["1001"] == 1
     assert client.post("/api/vote", json={"item_id": "nope", "vote": 1}, headers=auth()).status_code == 404
+    # A post's Mastodon id is no way to name an item (the app sends item ids only).
+    assert client.post("/api/vote", json={"status_id": "113456789012345678", "vote": 1}, headers=auth()).status_code == 404
 
 
 def test_profile_versions_and_hand_edits(client):

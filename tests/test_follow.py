@@ -340,13 +340,6 @@ def test_a_post_reached_on_the_way_keeps_its_comment(db, web, models, similarity
     assert it["url"] == TOOT and len(models["jev"]) == 1
 
 
-def test_a_readers_tap_on_a_post_isnt_kept_waiting(db, web, models, similarity):
-    # home.learn: a reader is waiting, so nothing is followed there.
-    it = from_bsky(skeet(), "mastodon:home:alex")
-    assert ingest(db, [it], follow_wrappers=False) == [item_id(HACKADAY)]
-    assert web.asked == []
-
-
 # ── Garbage in ───────────────────────────────────────────────────────────────
 
 def test_garbage_pages_and_answers_change_nothing(db, web, models, similarity):

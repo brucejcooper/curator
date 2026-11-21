@@ -290,7 +290,7 @@ def test_single_reader_database_moves_to_the_owner(tmp_path, monkeypatch):
     assert rows("SELECT user, item_id, vote FROM user_votes") == [("owner", "a", 1)]
     assert rows("SELECT user, item_id FROM user_bookmarks") == [("owner", "b")]
     assert rows("SELECT user FROM events") == [("owner",)]
-    assert rows("SELECT user, status_id FROM home_posts") == [("owner", "99")]
+    assert rows("SELECT name FROM sqlite_master WHERE name LIKE 'home_posts%'") == []
     assert rows("SELECT source FROM items") == [("mastodon:home:owner",)]
     assert rows("SELECT source FROM sightings") == [("mastodon:home:owner",)]
     assert rows("SELECT user, item_id, jev_score, local_score FROM judgments") == [("owner", "i1", 0.8, 0.6)]

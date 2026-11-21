@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 import httpx
 
 from curator import people, pipeline, store
-from curator.collect import (UA, advance, bluesky, iso, mastodon, mastodon_client, now, record_home, retry_after,
+from curator.collect import (UA, advance, bluesky, iso, mastodon, mastodon_client, now, retry_after,
                              shared_sources, status_id, statuses_items)
 from curator.config import OWNER
 
@@ -178,12 +178,8 @@ def gap_fill(stream: Stream) -> list[dict]:
     was down)."""
     conn = store.connect()
     try:
-        home_map: list | None = [] if stream.home_user else None
         with mastodon_client(stream.server, stream.token, TIMEOUT) as http:
-            items = mastodon(conn, http, stream.poll, stream.source, {}, home_map)
-        if stream.home_user:
-            record_home(conn, stream.home_user, home_map)
-        return items
+            return mastodon(conn, http, stream.poll, stream.source, {}, home=bool(stream.home_user))
     finally:
         conn.close()
 
@@ -192,12 +188,9 @@ def take(stream: Stream, status: dict) -> list[dict]:
     """The items a streamed status makes, as a poll would; moves the cursor."""
     conn = store.connect()
     try:
-        home_map: list | None = [] if stream.home_user else None
         with mastodon_client(stream.server, stream.token, TIMEOUT) as http:
-            items = statuses_items(http, [status], stream.source, {}, home_map)
+            items = statuses_items(http, [status], stream.source, {}, home=bool(stream.home_user))
         advance(conn, stream.source, status["id"])
-        if stream.home_user:
-            record_home(conn, stream.home_user, home_map)
         return items
     finally:
         conn.close()
