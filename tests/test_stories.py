@@ -51,7 +51,7 @@ class Jev:
 def jev(monkeypatch):
     j = Jev()
     monkeypatch.setattr("curator.stories.same_stories", j)
-    monkeypatch.setattr("curator.stories.embed", lambda texts: np.stack([VECTORS[t.split()[0].rstrip(":")] for t in texts]))
+    monkeypatch.setattr("curator.embeddings.embed", lambda texts: np.stack([VECTORS[t.split()[0].rstrip(":")] for t in texts]))
     return j
 
 

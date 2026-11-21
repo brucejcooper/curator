@@ -70,7 +70,7 @@ def test_trying_a_candidate_on_paper(alex, db, monkeypatch):
     # 8 items over a week; 4 would make Alex's feed (relevant ≥ 3 of 4); one of those Alex already got elsewhere.
     monkeypatch.setattr(scout, "ask", fake_ask([4, 4, 3, 3, 1, 0, 1, 0]))
     vectors = np.eye(8, 384, dtype=np.float32)
-    monkeypatch.setattr("curator.stories.embed", lambda texts: vectors[: len(texts)])
+    monkeypatch.setattr("curator.embeddings.embed", lambda texts: vectors[: len(texts)])
     known = vectors[[0]]  # the first item is a story Alex already has
     stats = scout.evaluate(db, alex, {"items": sample(8)}, known)
     assert stats["hit_rate"] == 0.5 and stats["novelty"] == 0.75
@@ -88,7 +88,7 @@ def test_how_tos_and_adverts_never_count_as_hits(alex, db, monkeypatch):
         return [(r["id"], {"answers": {"relevant": {"score": 4}, "generic_howto": {"noul": 0.9 if int(r["id"]) < 6 else 0.1}},
                            "usage": {"input_tokens": 1}}) for r in rows]
     monkeypatch.setattr(scout, "ask", ask)
-    monkeypatch.setattr("curator.stories.embed", lambda texts: np.eye(len(texts), 384, dtype=np.float32))
+    monkeypatch.setattr("curator.embeddings.embed", lambda texts: np.eye(len(texts), 384, dtype=np.float32))
     stats = scout.evaluate(db, alex, {"items": sample(8)}, np.zeros((0, 384), np.float32))
     assert stats["hit_rate"] == 0.25 and not scout.worth_suggesting(stats)
 
@@ -98,7 +98,7 @@ def test_sponsored_items_never_count_as_hits(alex, db, monkeypatch):
         return [(r["id"], {"answers": {"relevant": {"score": 4}, "sponsored": {"noul": 0.6 if int(r["id"]) < 6 else 0.1}},
                            "usage": {"input_tokens": 1}}) for r in rows]
     monkeypatch.setattr(scout, "ask", ask)
-    monkeypatch.setattr("curator.stories.embed", lambda texts: np.eye(len(texts), 384, dtype=np.float32))
+    monkeypatch.setattr("curator.embeddings.embed", lambda texts: np.eye(len(texts), 384, dtype=np.float32))
     stats = scout.evaluate(db, alex, {"items": sample(8)}, np.zeros((0, 384), np.float32))
     assert stats["hit_rate"] == 0.25 and not scout.worth_suggesting(stats)
 

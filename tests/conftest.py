@@ -33,6 +33,7 @@ def db(tmp_path, monkeypatch):
 
     monkeypatch.setattr(store, "DATA", tmp_path)
     monkeypatch.setattr(store, "DB", tmp_path / "t.sqlite")
+    monkeypatch.setattr(store, "FEEDS", tmp_path / "feeds")
     monkeypatch.setattr(publish, "FEEDS", tmp_path / "feeds")
     return store.connect()
 

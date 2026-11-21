@@ -113,7 +113,7 @@ def similarity(monkeypatch):
         pair = [a, sim["value"] * a + np.sqrt(1 - sim["value"] ** 2) * b]
         return np.array([pair[i % 2] for i in range(len(texts))], dtype=np.float32)
 
-    monkeypatch.setattr("curator.stories.embed", embed)
+    monkeypatch.setattr("curator.embeddings.embed", embed)
     return sim
 
 
@@ -374,7 +374,7 @@ def apart(monkeypatch):
     def embed(texts):
         return np.array([np.eye(384, dtype=np.float32)[dims.setdefault(t, len(dims))] for t in texts])
 
-    monkeypatch.setattr("curator.stories.embed", embed)
+    monkeypatch.setattr("curator.embeddings.embed", embed)
 
 
 @pytest.fixture

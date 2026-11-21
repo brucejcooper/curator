@@ -8,11 +8,10 @@ import os
 import random
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from functools import lru_cache
 
 import numpy as np
 
-from curator import store
+from curator import embeddings, store
 from curator.articles import fill_text, needs_text
 from curator.canon import canonical_url, item_id, title_key
 from curator.follow import count as count_follow, follow, host
@@ -20,7 +19,6 @@ from curator.images import POST_URL
 from curator.traits import QUESTIONS as TRAITS
 
 log = logging.getLogger(__name__)
-EMBED_MODEL = os.environ.get("CURATOR_EMBED_MODEL", "BAAI/bge-small-en-v1.5")
 # bge-small similarities sit high: same-story pairs from different outlets
 # measured 0.87-0.99, while different stories from one outlet reached 0.86.
 # Past these an item joins when Jev can't be asked (find_story).
@@ -47,20 +45,6 @@ JEV_SAME = 0.6
 # A story takes items for 72 hours from its first, so stories don't chain.
 WINDOW = timedelta(hours=72)
 SAMPLE_RATE = 0.03  # share of items eligible for the maybe lane's random sample
-
-
-@lru_cache(maxsize=1)
-def _model():
-    from fastembed import TextEmbedding
-
-    return TextEmbedding(EMBED_MODEL)
-
-
-def embed(texts: list[str]) -> np.ndarray:
-    if not texts:
-        return np.zeros((0, 384), dtype=np.float32)
-    vecs = np.array(list(_model().embed(texts)), dtype=np.float32)
-    return vecs / np.linalg.norm(vecs, axis=1, keepdims=True)
 
 
 def text_of(item: dict) -> str:
@@ -244,7 +228,7 @@ def ingest(conn, found: list[dict], tally: dict | None = None, follow_wrappers: 
     if any(needs_text(it) for it in fresh):
         conn.commit()  # don't hold the write lock while fetching articles
         fill_text(fresh, pages)
-    vectors = embed([text_of(it) for it in fresh])
+    vectors = embeddings.embed([text_of(it) for it in fresh])
     touched: set[str] = set()
     starts = story_starts(conn, stories)
     cutoff = (now - WINDOW).isoformat(timespec="seconds")

@@ -445,7 +445,7 @@ def test_a_sponsored_post_is_kept_but_never_published(alex, db, monkeypatch):
 
     monkeypatch.setattr("curator.stories.fill_text", lambda items: None)
     # Its own story, and (the same vector as the news) one joining a real story.
-    monkeypatch.setattr("curator.stories.embed", lambda texts: np.eye(384, dtype=np.float32)[[0, 1, 1]][: len(texts)])
+    monkeypatch.setattr("curator.embeddings.embed", lambda texts: np.eye(384, dtype=np.float32)[[0, 1, 1]][: len(texts)])
     lone = ("Track every dollar with Copilot Money", "Sponsored Post", "News")
     found = parse_feed(nine_to_five(lone, NEWS, COPILOT), "Sky News Feed")
     new = ingest(db, found)

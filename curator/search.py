@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from curator import store
+from curator import embeddings, store
 from curator.reader import annotate, without_quote
 
 HALF_LIFE_DAYS = 10  # recency weight halves every ten days...
@@ -43,9 +43,7 @@ def fts_query(text: str) -> str | None:
 
 
 def query_vector(text: str) -> np.ndarray:
-    from curator.stories import _model
-
-    model = _model()
+    model = embeddings._model()
     embed = getattr(model, "query_embed", model.embed)  # bge's query prefix, where fastembed has it
     v = np.array(next(iter(embed([text]))), dtype=np.float32)
     return v / np.linalg.norm(v)

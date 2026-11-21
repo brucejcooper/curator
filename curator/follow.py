@@ -27,7 +27,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from curator import articles, store
+from curator import articles, embeddings, store
 from curator.canon import canonical_url, item_id, short_title
 from curator.posts import bluesky_posts, bsky_post, bsky_unwanted, full_text, mastodon_post, quoting
 from curator.images import POST_URL, preview_image
@@ -504,13 +504,11 @@ def follow(conn, items: list[dict], tally: dict | None = None) -> dict[str, tupl
             needs_sim = [c for c in undecided if not c["hops"][-1]["pointer"] and not few_words(c["hops"][-1])]
             sims = {}
             if needs_sim:
-                from curator.stories import embed
-
                 texts = []
                 for c in needs_sim:
                     w, t = c["hops"][-1], c["target"]
                     texts += [f"{w['title']}. {own_text(w)[:EXTRACT]}", f"{t['title']}. {t['text'][:EXTRACT]}"]
-                vecs = embed(texts)
+                vecs = embeddings.embed(texts)
                 sims = {id(c): float(vecs[2 * i] @ vecs[2 * i + 1]) for i, c in enumerate(needs_sim)}
             grey = []
             for c in undecided:

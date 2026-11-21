@@ -33,7 +33,7 @@ import httpx
 import numpy as np
 import yaml
 
-from curator import people, store
+from curator import embeddings, people, store
 from curator.feeds import json_feed, parse_any, parse_feed
 from curator.items import UA
 from curator.posts import from_bsky, from_status, mastodon_client
@@ -337,7 +337,7 @@ def is_paywalled(http: httpx.Client, items: list[dict]) -> bool:
 
 def evaluate(conn, profile: Profile, found: dict, known: np.ndarray) -> dict | None:
     """Hit rate, volume and novelty of a candidate's recent items for this reader."""
-    from curator.stories import embed, text_of
+    from curator.stories import text_of
 
     items = found["items"]
     if len(items) < 3:
@@ -347,7 +347,7 @@ def evaluate(conn, profile: Profile, found: dict, known: np.ndarray) -> dict | N
     results = asyncio.run(ask(rows, questions, lambda r: {"item": item_state(r), "reader": {"profile": profile.profile_md}}))
     count_tokens(conn, results)
     floor = profile.sources["min_score"]["jev"]
-    vectors = embed([text_of(it) for it in items])
+    vectors = embeddings.embed([text_of(it) for it in items])
     novel = (known @ vectors.T).max(axis=0) < SAME_STORY if len(known) else np.ones(len(items), bool)
     scored = []
     for (n, resp), it, is_new in zip(results, items, novel):

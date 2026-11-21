@@ -10,7 +10,7 @@ import sqlite3
 
 import numpy as np
 
-from curator.config import DATA, DB, OWNER
+from curator.config import DATA, DB, FEEDS, OWNER
 from curator.sponsors import SPONSORED, same_name, sponsor_line
 
 SCHEMA = """
@@ -217,10 +217,8 @@ def from_feed_files(conn: sqlite3.Connection) -> None:
     """The timeline was read from each reader's feed.json, which alone held
     what's in their feed now, its timeline ids and "Why this?": bring those
     into feed_history, so the timeline reads the same until they next publish."""
-    from curator.publish import feed_folder
-
     for (user,) in conn.execute("SELECT id FROM users").fetchall():
-        path = feed_folder(user) / "feed.json"
+        path = FEEDS / user / "feed.json"
         if not path.exists():
             continue
         rows = []

@@ -17,7 +17,7 @@ from functools import lru_cache
 
 import numpy as np
 
-from curator import store
+from curator import embeddings, store
 from curator.people import Profile
 from curator.traits import ask, count_tokens, item_state
 
@@ -189,10 +189,10 @@ class LocalModel:
     Every verdict records which features drove it."""
 
     def __init__(self, conn, profile: Profile):
-        from curator.stories import embed, source_reputation
+        from curator.stories import source_reputation
 
         likes, dislikes = profile_topics(profile.profile_md)
-        self.likes, self.dislikes = embed(likes), embed(dislikes)
+        self.likes, self.dislikes = embeddings.embed(likes), embeddings.embed(dislikes)
         self.reputation = source_reputation(conn, profile.user)
         signals = store.labels(conn, profile.user)  # votes, bookmarks, opens
         ids = list(signals)
