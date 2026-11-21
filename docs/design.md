@@ -126,7 +126,12 @@ picks what each reader would want, learning from what they actually read.
    topic) with their profile as context, and their local model.
 5. **Publish** each reader's feed: the deciding classifier's stories that
    clear their bar, up to a daily ceiling (a slow day gives a short feed,
-   not filler), plus a "maybe" lane.
+   not filler), plus a "maybe" lane, over the last three days
+   (`publish.FEED_DAYS`). What's in it is recorded in `feed_history`, with
+   each story's lane, timeline id, "Why this?" and trial source: that is the
+   reader's timeline in the app. A story that leaves the feed keeps its row,
+   so search still finds what they were shown. Their `feed.json` and
+   `feed.xml`, for other feed readers, are written from the same rows.
 
 **Social, in real time.** New Mastodon and Bluesky posts reach the feed
 within a minute or two, over outbound connections only:
@@ -229,7 +234,8 @@ One timeline, oldest to newest from where you left off: the stories the
 curator picked. Your Mastodon home timeline is just another source (with a
 lower bar), so a post in it that's also elsewhere is one story, shown once.
 Stories get a Mastodon-style id (milliseconds << 16) from when they were
-first seen. The position is kept on the server and only moves forward, so devices
+first seen. The timeline is read from the database (`feed_history`, the
+stories in the reader's feed now), not from their exported `feed.json`. The position is kept on the server and only moves forward, so devices
 can't undo each other's progress. The app never talks to Mastodon itself;
 replying and boosting happen on your server ("See original").
 Its diagnostics log (ids, paths and timings only) goes from Settings to the

@@ -96,7 +96,7 @@ def test_preview_and_event_are_separate_stories(alex, db, jev, hours):
                    [(r[0],) for r in db.execute("SELECT id FROM items")])
     db.commit()
     publish(db, alex)
-    arts = {a["title"]: a for a in reader.articles("alex")}
+    arts = {a["title"]: a for a in reader.articles(db, "alex")}
     assert arts[EVENT]["id"] != arts[PREVIEW]["id"]  # a sort_id of its own, from when it came
     assert int(arts[EVENT]["id"]) > int(arts[PREVIEW]["id"])
     # The reader read past the preview; the event comes after it, as news.

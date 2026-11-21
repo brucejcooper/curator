@@ -29,7 +29,7 @@ def add(db, iid, title, *, source="mastodon:#astronomy", days=1.0, vec=None, sum
                 story or iid, (vec if vec is not None else unit(DIM - 1)).tobytes()))
     db.execute("INSERT INTO sightings VALUES (?, ?, ?, ?)", (iid, source, f"https://x.example/{iid}", when))
     if shown:
-        db.execute("INSERT INTO feed_history VALUES ('alex', ?, ?, 'main', ?)", (story or iid, iid, when))
+        db.execute("INSERT INTO feed_history (user, story_id, item_id, lane, added) VALUES ('alex', ?, ?, 'main', ?)", (story or iid, iid, when))
     db.commit()
 
 
@@ -98,8 +98,13 @@ def test_the_word_index_follows_the_items(alex, db):
 
 
 def test_publishing_records_what_was_in_the_feed(alex, db):
-    stories = [{"story": "s1", "id": "a", "lane": "maybe", "first_fetched": ago(1)}]
-    search.record(db, "alex", stories)
-    search.record(db, "alex", [{**stories[0], "lane": "main"}])
-    search.record(db, "alex", [{**stories[0], "id": "b", "lane": "maybe"}])
-    assert tuple(db.execute("SELECT item_id, lane FROM feed_history WHERE story_id = 's1'").fetchone()) == ("b", "main")
+    from curator.publish import record
+
+    stories = [{"story": "51a7", "id": "a", "lane": "maybe", "first_fetched": ago(1)}]
+    record(db, "alex", stories)
+    record(db, "alex", [{**stories[0], "lane": "main"}])
+    record(db, "alex", [{**stories[0], "id": "b", "lane": "maybe"}])
+    row = db.execute("SELECT item_id, lane, feed_lane FROM feed_history WHERE story_id = '51a7'").fetchone()
+    assert tuple(row) == ("b", "main", "maybe")  # the best lane it was in, for search; the lane it's in now
+    record(db, "alex", [])
+    assert db.execute("SELECT feed_lane FROM feed_history WHERE story_id = '51a7'").fetchone()[0] is None

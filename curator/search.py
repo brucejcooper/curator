@@ -155,16 +155,6 @@ def entries(conn, user: str, results: list[tuple[str, str, float]]) -> list[dict
     return annotate(conn, user, out)
 
 
-def record(conn, user: str, stories: list[dict]) -> None:
-    """Notes the stories in a reader's feed, so search can find what they
-    were shown long after it has left the feed."""
-    conn.executemany(
-        """INSERT INTO feed_history (user, story_id, item_id, lane, added) VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT (user, story_id) DO UPDATE SET item_id = excluded.item_id,
-             lane = CASE WHEN feed_history.lane = 'main' THEN 'main' ELSE excluded.lane END""",
-        [(user, s["story"], s["id"], s["lane"], s["first_fetched"]) for s in stories])
-
-
 def backfill(conn, profile) -> int:
     """Before feed_history existed: every story that cleared the reader's bar
     (or came from an always-show source), as if it had been in their feed.

@@ -10,11 +10,11 @@ import logging
 
 import httpx
 
-from curator import people
+from curator import people, store
 from curator.collect import mastodon_client
 from curator.home import item_for_status
 from curator.people import Profile
-from curator.publish import feed_folder
+from curator.publish import edition_key, json_feed, timeline
 
 log = logging.getLogger(__name__)
 _articles_cache: dict = {}
@@ -31,32 +31,31 @@ def without_quote(summary: str, quote: dict | None) -> str:
     return summary.removesuffix(line).rstrip() if line and summary.endswith(line) else summary
 
 
-# ── Curated articles (from the reader's published feed) ─────────────────────
+# ── Curated articles (the reader's feed, from feed_history) ─────────────────
 
-def articles(user: str) -> list[dict]:
-    """The curated stories in the reader's feed, oldest first."""
-    path = feed_folder(user) / "feed.json"
-    if not path.exists():
-        return []
-    mtime = path.stat().st_mtime
+def card(it: dict) -> dict:
+    """An item of the reader's JSON Feed as the app's article."""
+    c = it["_curator"]
+    return {
+        "kind": "article", "id": c["sort_id"], "item": it["id"], "url": it["url"], "title": it["title"],
+        "summary": without_quote(it.get("content_text") or "", c.get("quote")), "quote": c.get("quote"), "poster": c.get("poster"),
+        "image": it.get("image"), "published": it.get("date_published"),
+        "author": (it.get("authors") or [{}])[0].get("name") or "", "source": c.get("source", ""),
+        "lane": c.get("lane", "main"), "reason": c.get("reason") or "", "also": c.get("also") or [],
+        "trial": c.get("trial"), "via": c.get("via") or [],
+    }
+
+
+def articles(conn, user: str) -> list[dict]:
+    """The curated stories in the reader's feed, oldest first: the same rows
+    as their exported feed (publish.timeline), kept until it is published
+    again."""
+    edition = store.get(conn, edition_key(user))
     cached = _articles_cache.get(user)
-    if not cached or cached["mtime"] != mtime:
-        feed = json.loads(path.read_text())
-        out = []
-        for it in feed.get("items", []):
-            c = it.get("_curator") or {}
-            if not c.get("sort_id"):
-                continue
-            out.append({
-                "kind": "article", "id": c["sort_id"], "item": it["id"], "url": it["url"], "title": it["title"],
-                "summary": without_quote(it.get("content_text") or "", c.get("quote")), "quote": c.get("quote"), "poster": c.get("poster"),
-                "image": it.get("image"), "published": it.get("date_published"),
-                "author": (it.get("authors") or [{}])[0].get("name") or "", "source": c.get("source", ""),
-                "lane": c.get("lane", "main"), "reason": c.get("reason") or "", "also": c.get("also") or [],
-                "trial": c.get("trial"), "via": c.get("via") or [],
-            })
-        out.sort(key=lambda a: num(a["id"]))
-        cached = _articles_cache[user] = {"mtime": mtime, "items": out}
+    if not cached or not edition or cached["edition"] != edition:
+        feed = json_feed(conn, timeline(conn, user), "", "")
+        out = sorted((card(it) for it in feed["items"]), key=lambda a: num(a["id"]))
+        cached = _articles_cache[user] = {"edition": edition, "items": out}
     return cached["items"]
 
 
@@ -82,7 +81,7 @@ def annotate(conn, user: str, entries: list[dict]) -> list[dict]:
 def after(conn, profile: Profile, since: str | None, limit: int = 40) -> dict:
     """Entries newer than `since`, oldest first. `cursor` is the newest id
     covered, to ask from next time; `end` means there's nothing newer yet."""
-    arts = [dict(a) for a in articles(profile.user) if num(a["id"]) > num(since)][:limit]
+    arts = [dict(a) for a in articles(conn, profile.user) if num(a["id"]) > num(since)][:limit]
     cursor = arts[-1]["id"] if arts else since
     return {"items": annotate(conn, profile.user, arts), "cursor": cursor, "end": len(arts) < limit}
 
@@ -90,13 +89,13 @@ def after(conn, profile: Profile, since: str | None, limit: int = 40) -> dict:
 def before(conn, profile: Profile, until: str, limit: int = 20) -> dict:
     """Entries older than `until`, oldest first. `cursor` is the oldest id
     covered; `end` means you've reached the start of the timeline."""
-    arts = [dict(a) for a in articles(profile.user) if num(a["id"]) < num(until)][-limit:]
+    arts = [dict(a) for a in articles(conn, profile.user) if num(a["id"]) < num(until)][-limit:]
     return {"items": annotate(conn, profile.user, arts), "cursor": arts[0]["id"] if arts else until, "end": len(arts) < limit}
 
 
 def latest_id(conn, user: str) -> str | None:
     """The newest timeline id there is for this reader (for "mark everything read")."""
-    last = articles(user)[-1:]
+    last = articles(conn, user)[-1:]
     return last[0]["id"] if last else None
 
 

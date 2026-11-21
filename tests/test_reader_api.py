@@ -3,6 +3,7 @@ timeline (merged in id order), position, votes, profile and feed."""
 
 import json
 import re
+from datetime import datetime, timezone
 
 import httpx
 import pytest
@@ -11,18 +12,23 @@ from starlette.testclient import TestClient
 from conftest import docs
 from curator import people, reader, server
 from curator.auth import User
-from curator.publish import feed_folder
+from curator.publish import export
 
 
-def write_feed(user, items):
-    folder = feed_folder(user)
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / "feed.json").write_text(json.dumps({"items": items}))
-    reader._articles_cache.pop(user, None)
+def write_feed(db, user, items):
+    """Makes `items` the reader's feed, as publishing would."""
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    db.executemany("INSERT OR REPLACE INTO items (id, url, canonical, title, summary, source, published, fetched, story_id, via) "
+                   "VALUES (:id, :url, :url, :id, '', :source, :now, :now, :story, :via)", [{**a, "now": now} for a in items])
+    db.execute("UPDATE feed_history SET feed_lane = NULL WHERE user = ?", (user,))
+    db.executemany("INSERT OR REPLACE INTO feed_history (user, story_id, item_id, lane, added, feed_lane, sort_id) "
+                   "VALUES (?, ?, ?, 'main', ?, 'main', ?)", [(user, a["story"], a["id"], now, a["sort_id"]) for a in items])
+    export(db, user)
 
 
-def art(item_id, sort_id, source="rss:Sky News Feed"):
-    return {"id": item_id, "url": f"https://n/{item_id}", "title": item_id, "content_text": "", "_curator": {"sort_id": sort_id, "source": source}}
+def art(item_id, sort_id, source="rss:Sky News Feed", via=None):
+    return {"id": item_id, "url": f"https://n/{item_id}", "source": source, "story": f"story-{item_id}", "sort_id": sort_id,
+            "via": json.dumps(via) if via else None}
 
 
 @pytest.fixture
@@ -30,10 +36,7 @@ def client(db, alex, monkeypatch):
     users = {"tok-alex": User("alex", "Alex"), "tok-sam": User("sam", "Sam")}
     monkeypatch.setattr(server, "user_from_token", lambda t: users.get(t))
     people.set_mastodon(db, "alex", "m.example", "masto-token", "me")
-    write_feed("alex", [art("art-a", "1001"), art("art-b", "1005"), art("art-home", "1003", "mastodon:home:alex"), art("art-new", "2000")])
-    db.executemany("INSERT INTO items (id, url, canonical, title, summary, source, published, fetched) VALUES (?, '', '', '', '', '', '', '')",
-                   [("art-a",), ("art-b",)])
-    db.commit()
+    write_feed(db, "alex", [art("art-a", "1001"), art("art-b", "1005"), art("art-home", "1003", "mastodon:home:alex"), art("art-new", "2000")])
     return TestClient(server.app)
 
 
@@ -76,7 +79,7 @@ def test_position_only_moves_forward_and_is_per_reader(client, db):
 def test_votes_are_per_reader(client, db):
     people.ensure_user(db, "sam", "Sam")
     people.add_version(db, "sam", "onboarding", "x", *docs())
-    write_feed("sam", [art("art-a", "1001")])
+    write_feed(db, "sam", [art("art-a", "1001")])
     assert client.post("/api/vote", json={"item_id": "art-a", "vote": 1}, headers=auth()).json() == {"ok": True}
     client.post("/api/vote", json={"item_id": "art-a", "vote": -1}, headers=auth("sam"))
     mine = {e["id"]: e.get("vote") for e in client.get("/api/timeline?after=999", headers=auth()).json()["items"]}
@@ -207,9 +210,7 @@ def test_wrappers_reach_the_app_and_the_cost_shows_on_status(client, db):
 
     via = [{"url": "https://bsky.app/profile/fan.example/post/3x", "name": "A Fan", "kind": "bluesky", "author": "@fan.example"},
            {"url": "https://hackaday.com/a", "name": "Hackaday", "kind": "article", "author": ""}]
-    original = art("art-toot", "3000", "bluesky:#plotters")
-    original["_curator"]["via"] = via
-    write_feed("alex", [art("art-a", "1001"), original])
+    write_feed(db, "alex", [art("art-a", "1001"), art("art-toot", "3000", "bluesky:#plotters", via)])
     items = client.get("/api/timeline?after=999", headers=auth()).json()["items"]
     assert [e["via"] for e in items] == [[], via]
     store.put(db, follow.day_key(), {"considered": 10, "followed": 2, "hops": 3, "heuristic": 6, "jev": 2, "haiku": 1, "haiku_tokens": 900,

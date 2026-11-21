@@ -97,10 +97,16 @@ CREATE TABLE IF NOT EXISTS suggestions (  -- the weekly scout's finds, and what 
 CREATE INDEX IF NOT EXISTS suggestions_user ON suggestions(user, status);
 CREATE TABLE IF NOT EXISTS mastodon_apps (server TEXT PRIMARY KEY, client_id TEXT, client_secret TEXT);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE IF NOT EXISTS feed_history (  -- every story that has been in a reader's feed, for search
+CREATE TABLE IF NOT EXISTS feed_history (  -- every story that has been in a reader's feed: their timeline, and search
   user TEXT, story_id TEXT,
   item_id TEXT,                 -- the version they were shown
-  lane TEXT, added TEXT,
+  lane TEXT,                    -- the best lane it has been in (main, maybe)
+  added TEXT,                   -- when the story was first seen
+  feed_lane TEXT,               -- its lane in their feed now; NULL once it has left (publish.record)
+  sort_id TEXT,                 -- its timeline id (publish.sort_id)
+  reason TEXT,                  -- "Why this?"
+  trial TEXT,                   -- the source on trial it came from, if any
+  story_jev REAL, story_local REAL,  -- each classifier's best score in the story
   PRIMARY KEY (user, story_id)
 );
 -- Full-text search over items (search.py), kept in step by triggers.
@@ -201,6 +207,10 @@ def migrate(conn: sqlite3.Connection) -> None:
         conn.execute("CREATE TABLE home_posts (user TEXT, status_id TEXT, item_id TEXT, seen TEXT, PRIMARY KEY (user, status_id))")
         conn.execute("INSERT INTO home_posts SELECT ?, status_id, item_id, seen FROM home_posts_old", (OWNER,))
         conn.execute("DROP TABLE home_posts_old")
+    if "feed_history" in tables and "feed_lane" not in columns(conn, "feed_history"):
+        for col in ("feed_lane TEXT", "sort_id TEXT", "reason TEXT", "trial TEXT", "story_jev REAL", "story_local REAL"):
+            conn.execute(f"ALTER TABLE feed_history ADD COLUMN {col}")
+        from_feed_files(conn)
     # Before sign-in, votes and bookmarks were the owner's alone.
     if "votes" in tables:
         conn.execute("CREATE TABLE IF NOT EXISTS user_votes (user TEXT, item_id TEXT, vote INTEGER, time TEXT, PRIMARY KEY (user, item_id))")
@@ -211,6 +221,30 @@ def migrate(conn: sqlite3.Connection) -> None:
         conn.execute("INSERT OR IGNORE INTO user_bookmarks SELECT ?, item_id, time FROM bookmarks", (OWNER,))
         conn.execute("DROP TABLE bookmarks")
     conn.commit()
+
+
+def from_feed_files(conn: sqlite3.Connection) -> None:
+    """The timeline was read from each reader's feed.json, which alone held
+    what's in their feed now, its timeline ids and "Why this?": bring those
+    into feed_history, so the timeline reads the same until they next publish."""
+    from curator.publish import feed_folder
+
+    for (user,) in conn.execute("SELECT id FROM users").fetchall():
+        path = feed_folder(user) / "feed.json"
+        if not path.exists():
+            continue
+        rows = []
+        for it in json.loads(path.read_text()).get("items", []):
+            c = it.get("_curator") or {}
+            if c.get("story") and c.get("sort_id"):
+                rows.append((user, c["story"], it["id"], c.get("lane", "main"), c.get("added"), c.get("lane", "main"), c["sort_id"],
+                             c.get("reason") or "", c.get("trial"), c.get("jev"), c.get("local")))
+        conn.executemany(
+            """INSERT INTO feed_history (user, story_id, item_id, lane, added, feed_lane, sort_id, reason, trial, story_jev, story_local)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (user, story_id) DO UPDATE SET item_id = excluded.item_id, added = COALESCE(excluded.added, added),
+                 feed_lane = excluded.feed_lane, sort_id = excluded.sort_id, reason = excluded.reason, trial = excluded.trial,
+                 story_jev = excluded.story_jev, story_local = excluded.story_local""", rows)
 
 
 def get(conn: sqlite3.Connection, key: str, default=None):

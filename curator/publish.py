@@ -7,15 +7,21 @@ small random sample of the rest, so votes reach each model's blind spots,
 not just what it already chose."""
 
 import json
+import uuid
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from xml.etree import ElementTree as ET
 
-from curator import people
+from curator import people, store
 from curator.config import FEEDS, PUBLIC_URL, SITE
 from curator.people import Profile
 
 FEED_DAYS = 3
+
+
+def window_start() -> str:
+    """The feed covers stories first seen since this (ISO 8601 UTC)."""
+    return (datetime.now(timezone.utc) - timedelta(days=FEED_DAYS)).isoformat(timespec="seconds")
 
 
 def marks(n) -> str:
@@ -117,8 +123,7 @@ def select(conn, profile: Profile) -> list[dict]:
     maybe lane (the other classifier's confident picks, plus the random
     sample) is capped at a third of the main lane's size."""
     src = profile.sources
-    since = (datetime.now(timezone.utc) - timedelta(days=FEED_DAYS)).isoformat(timespec="seconds")
-    stories = candidates(conn, profile.user, src["keys"], since)
+    stories = candidates(conn, profile.user, src["keys"], window_start())
     margins(conn, profile.user, stories, src["min_score"], src["source_floors"], src["always"], src["trial"])
     quota = src["target_per_day"] * FEED_DAYS
     main = people.decider(conn, profile.user)
@@ -183,6 +188,38 @@ def sort_id(story: dict) -> str:
     return str((ms << 16) | int(story["story"][:4], 16))
 
 
+def record(conn, user: str, stories: list[dict]) -> None:
+    """Makes `stories` the reader's feed: what the app's timeline and the
+    exported feed both show (`timeline`). A story that leaves the feed stays
+    in feed_history, so search can find what they were shown long after.
+    `lane` there is the best lane it was ever in; `feed_lane` is its lane in
+    the feed now (NULL once it has left)."""
+    conn.execute("UPDATE feed_history SET feed_lane = NULL WHERE user = ? AND feed_lane IS NOT NULL", (user,))
+    conn.executemany(
+        """INSERT INTO feed_history (user, story_id, item_id, lane, added, feed_lane, sort_id, reason, trial, story_jev, story_local)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (user, story_id) DO UPDATE SET item_id = excluded.item_id, added = excluded.added,
+             lane = CASE WHEN feed_history.lane = 'main' THEN 'main' ELSE excluded.lane END,
+             feed_lane = excluded.feed_lane, sort_id = excluded.sort_id, reason = excluded.reason, trial = excluded.trial,
+             story_jev = excluded.story_jev, story_local = excluded.story_local""",
+        [(user, s["story"], s["id"], s["lane"], s["first_fetched"], s["lane"], sort_id(s), reason(s), s.get("story_trial"),
+          s.get("story_jev"), s.get("story_local")) for s in stories])
+
+
+def timeline(conn, user: str) -> list[dict]:
+    """The stories in the reader's feed now, newest first, in the shape
+    `select` gives them: the version they were shown, its lane and why."""
+    rows = conn.execute(
+        """SELECT f.story_id AS story, f.feed_lane AS lane, f.sort_id, f.reason, f.trial AS story_trial,
+                  f.story_jev, f.story_local, f.added AS first_fetched,
+                  i.id, i.url, i.title, i.summary, i.image, i.published, i.author, i.source, i.quote, i.poster, i.via
+           FROM feed_history f JOIN items i ON i.id = f.item_id
+           WHERE f.user = ? AND f.feed_lane IS NOT NULL AND f.added >= ?
+           ORDER BY i.published DESC, CAST(f.sort_id AS INTEGER)""", (user, window_start())).fetchall()
+    decider = people.decider(conn, user)
+    return [{**dict(r), "decider": decider} for r in rows]
+
+
 def json_feed(conn, stories: list[dict], title: str, feed_url: str) -> dict:
     items = []
     for s in stories:
@@ -202,10 +239,10 @@ def json_feed(conn, stories: list[dict], title: str, feed_url: str) -> dict:
                 "score": s["story_jev"] if s["decider"] == "jev" else s["story_local"],
                 "jev": s["story_jev"],
                 "local": s["story_local"],
-                "reason": reason(s),
+                "reason": s["reason"] or "",
                 "story": s["story"],
                 "added": s["first_fetched"],
-                "sort_id": sort_id(s),
+                "sort_id": s["sort_id"],
                 "source": s["source"],
                 "trial": s.get("story_trial"),
                 "also": others,
@@ -245,18 +282,29 @@ def feed_folder(user: str):
 
 
 def publish(conn, profile: Profile) -> int:
-    """Writes the reader's feed; returns how many items it has."""
+    """Picks the reader's feed and writes it; returns how many items it has."""
     from curator.images import fill_images
-    from curator.search import record
 
-    reader = people.user(conn, profile.user) or {}
     stories = select(conn, profile)
     fill_images(conn, stories)
     record(conn, profile.user, stories)
-    conn.commit()
+    return export(conn, profile.user)
+
+
+def edition_key(user: str) -> str:
+    return f"feed_edition:{user}"
+
+
+def export(conn, user: str) -> int:
+    """Writes the reader's feed as JSON Feed and RSS, for other feed readers,
+    from the same rows as their timeline in the app; returns how many items
+    it has."""
+    reader = people.user(conn, user) or {}
     feed_url = f"{PUBLIC_URL}/f/{reader.get('feed_path', '')}/feed.json"
-    feed = json_feed(conn, stories, f"Curated for {reader.get('name') or profile.user}", feed_url)
-    folder = feed_folder(profile.user)
+    feed = json_feed(conn, timeline(conn, user), f"Curated for {reader.get('name') or user}", feed_url)
+    store.put(conn, edition_key(user), uuid.uuid4().hex)  # the app's cached timeline is stale
+    conn.commit()
+    folder = feed_folder(user)
     folder.mkdir(parents=True, exist_ok=True)
     for name, body in (("feed.json", json.dumps(feed, ensure_ascii=False).encode()), ("feed.xml", rss(feed))):
         tmp = folder / f".{name}"
