@@ -120,14 +120,26 @@ def from_post(media, handle: str, poster: dict, http: httpx.Client) -> dict:
     return {**it, "image": save(http, picture(media), media.code), "quote": None, "poster": poster}
 
 
+class Private(Exception):
+    """A private account the throwaway account doesn't follow (yet)."""
+
+
 def person(conn, cl, http: httpx.Client, handle: str) -> list[dict]:
     """A person's posts since the last look (pinned ones too, if they're new)."""
+    from instagrapi.exceptions import ClientError
+
     key = f"instagram:@{handle}"
     since = store.get(conn, key, "") or iso(now() - FIRST_LOOK)
     user = cl.user_info_by_username_v1(handle)
+    try:
+        medias = cl.user_medias_v1(user.pk, PER_FETCH)
+    except ClientError:
+        if user.is_private:  # Instagram says only "something went wrong"
+            raise Private(handle)
+        raise
     avatar = str(user.profile_pic_url) if user.profile_pic_url else None
     poster = {"name": user.full_name or "", "avatar": save(http, avatar, f"@{handle}", refresh=True) or ""}
-    posts = [m for m in cl.user_medias_v1(user.pk, PER_FETCH) if iso(m.taken_at) > since]
+    posts = [m for m in medias if iso(m.taken_at) > since]
     found = [from_post(m, handle, poster, http) for m in posts]
     if found:
         store.put(conn, key, max(it["published"] for it in found))
@@ -150,6 +162,11 @@ def collect(conn, handles: set[str]) -> list[dict]:
     except UserNotFound:
         log.warning("instagram @%s: no such account", handle)
         found = []
+    except Private:
+        # Not Instagram refusing: the others carry on. Looked at again in a few hours.
+        store.put(conn, f"instagram_fetched:@{handle}", iso(now()))
+        problem(conn, f"@{handle} is private: follow it from {os.environ.get('INSTAGRAM_USER')} to see its posts")
+        return []
     except LoginRequired as e:
         problem(conn, f"Instagram logged us out (logging in again next time): {e}")
         return []

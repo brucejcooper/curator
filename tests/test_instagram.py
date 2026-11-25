@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from instagrapi import Client
-from instagrapi.exceptions import BadPassword, LoginRequired, PleaseWaitFewMinutes, UserNotFound
+from instagrapi.exceptions import BadPassword, ClientError, LoginRequired, PleaseWaitFewMinutes, UserNotFound
 
 from curator import instagram, people, store
 from curator.judge import apply_shared_rules
@@ -24,14 +24,19 @@ def insta(db, tmp_path, monkeypatch):
     monkeypatch.setattr(instagram, "PICTURES", tmp_path / "media" / "instagram")
     monkeypatch.setattr(instagram, "SESSION", tmp_path / "session")
     monkeypatch.setattr(instagram, "save", lambda http, url, name, refresh=False: f"https://curator.example/media/instagram/{name}.jpg")
-    fake = SimpleNamespace(posts={}, looked=[], fail=None)
+    fake = SimpleNamespace(posts={}, looked=[], fail=None, private=set())
 
     def user_info(handle):
         fake.looked.append(handle)
         if fake.fail:
             raise fake.fail
-        return SimpleNamespace(pk=handle, full_name=handle.title(), profile_pic_url="https://cdn.example/me.jpg")
-    cl = SimpleNamespace(user_info_by_username_v1=user_info, user_medias_v1=lambda pk, n: fake.posts.get(pk, [])[:n])
+        return SimpleNamespace(pk=handle, full_name=handle.title(), profile_pic_url="https://cdn.example/me.jpg",
+                               is_private=handle in fake.private)
+    def medias(pk, n):
+        if pk in fake.private:
+            raise ClientError("We're sorry, but something went wrong. Please try again.")
+        return fake.posts.get(pk, [])[:n]
+    cl = SimpleNamespace(user_info_by_username_v1=user_info, user_medias_v1=medias)
     monkeypatch.setattr(instagram, "client", lambda conn: cl)
     return fake
 
@@ -99,6 +104,15 @@ def test_a_missing_account_is_skipped_until_its_next_turn(db, insta):
     insta.fail = UserNotFound("not found")
     assert instagram.collect(db, {"gone"}) == [] and instagram.collect(db, {"gone"}) == []
     assert insta.looked == ["gone"] and store.get(db, instagram.PROBLEM) is None
+
+
+def test_a_private_account_not_followed_is_noted_and_the_others_carry_on(db, insta):
+    insta.private = {"friend"}
+    insta.posts = {"jeweller": [post("a", 1)]}
+    store.put(db, "instagram_fetched:@jeweller", "2001-01-01T00:00:00+00:00")
+    assert instagram.collect(db, {"friend", "jeweller"}) == []
+    assert "@friend is private: follow it from throwaway" in store.get(db, instagram.PROBLEM)
+    assert [it["url"].split("/")[-2] for it in instagram.collect(db, {"friend", "jeweller"})] == ["a"]  # not paused
 
 
 def test_an_album_shows_its_first_picture_and_a_video_its_still():
