@@ -1,6 +1,8 @@
 """Instagram: every post from a handful of people, in order (no ads, no
 algorithm). Instagram shows nothing to the logged out, so this reads as a
-throwaway account (INSTAGRAM_USER, INSTAGRAM_PASSWORD), and gently, since
+throwaway account (INSTAGRAM_USER, INSTAGRAM_PASSWORD), through the Android
+app's private API (instagrapi: the website's endpoints, which instaloader
+uses, refuse scripted logins outright), and gently, since
 Instagram flags accounts that look automated: one person per cycle, each at
 most every few hours. Its picture links expire, so pictures are saved here and
 served from /media.
@@ -11,7 +13,6 @@ so in the app (`problem`) rather than going quiet."""
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from itertools import islice
 
 import httpx
 
@@ -23,7 +24,7 @@ from curator.items import item
 log = logging.getLogger(__name__)
 MEDIA = DATA / "media"
 PICTURES = MEDIA / "instagram"
-SESSION = DATA / "instagram-session"
+SESSION = DATA / "instagram-settings.json"  # the app "device" and its login, kept between runs
 FETCH_EVERY = timedelta(hours=3)
 RETRY_LOGIN = timedelta(hours=6)  # repeated failed logins get an account locked
 # After Instagram refuses ("Please wait a few minutes"): an hour, doubling with
@@ -61,35 +62,35 @@ def due(conn, handles: set[str]) -> str | None:
     return waiting[0][1] if waiting else None
 
 
-def loader(conn):
-    import instaloader
+def client(conn):
+    """A logged-in client: the saved login, checked (and renewed if Instagram
+    dropped it), else a fresh one. None if it can't log in."""
+    from instagrapi import Client
+    from instagrapi.exceptions import ClientError
 
     user = os.environ.get("INSTAGRAM_USER")
     if not user:
         problem(conn, "INSTAGRAM_USER isn't set, so Instagram can't be read")
         return None
-    L = instaloader.Instaloader(quiet=True, download_pictures=False, download_videos=False,
-                                download_video_thumbnails=False, save_metadata=False,
-                                max_connection_attempts=1, request_timeout=30)
-    if SESSION.exists():
-        L.load_session_from_file(user, str(SESSION))
-        return L
     failed = store.get(conn, "instagram_login_failed", "")
     if failed and failed > iso(now() - RETRY_LOGIN):
         return None
     from curator.secrets import get_secret
 
+    cl = Client()
+    cl.delay_range = [2, 5]  # seconds between requests, like a person
     try:
-        L.login(user, get_secret("INSTAGRAM_PASSWORD"))
-    except (instaloader.exceptions.InstaloaderException, RuntimeError) as e:
+        if SESSION.exists():
+            cl.load_settings(SESSION)
+        cl.login(user, get_secret("INSTAGRAM_PASSWORD"))
+    except (ClientError, RuntimeError) as e:
         store.put(conn, "instagram_login_failed", iso(now()))
         problem(conn, f"Couldn't log in to Instagram as {user} (trying again in a few hours): {e}")
         return None
     store.put(conn, "instagram_login_failed", "")
     SESSION.parent.mkdir(parents=True, exist_ok=True)
-    L.save_session_to_file(str(SESSION))
-    log.info("instagram: logged in as %s", user)
-    return L
+    cl.dump_settings(SESSION)
+    return cl
 
 
 def save(http: httpx.Client, url: str | None, name: str, refresh: bool = False) -> str | None:
@@ -106,23 +107,28 @@ def save(http: httpx.Client, url: str | None, name: str, refresh: bool = False) 
     return f"{PUBLIC_URL}/media/instagram/{name}.jpg" if path.exists() else None
 
 
-def from_post(post, handle: str, poster: dict, http: httpx.Client) -> dict:
-    caption = (post.caption or "").strip()
-    it = item(f"https://www.instagram.com/p/{post.shortcode}/", short_title(caption) if caption else f"{poster['name'] or handle} on Instagram",
-              caption, f"instagram:@{handle}", f"@{handle}", post.date_utc.replace(tzinfo=timezone.utc), always_show=True)
-    return {**it, "image": save(http, post.url, post.shortcode), "quote": None, "poster": poster}
+def picture(media) -> str | None:
+    """A post's picture: its own, or an album's first, or a video's still."""
+    url = media.thumbnail_url or next((r.thumbnail_url for r in media.resources if r.thumbnail_url), None)
+    return str(url) if url else None
 
 
-def person(conn, L, http: httpx.Client, handle: str) -> list[dict]:
+def from_post(media, handle: str, poster: dict, http: httpx.Client) -> dict:
+    caption = (media.caption_text or "").strip()
+    it = item(f"https://www.instagram.com/p/{media.code}/", short_title(caption) if caption else f"{poster['name'] or handle} on Instagram",
+              caption, f"instagram:@{handle}", f"@{handle}", media.taken_at, always_show=True)
+    return {**it, "image": save(http, picture(media), media.code), "quote": None, "poster": poster}
+
+
+def person(conn, cl, http: httpx.Client, handle: str) -> list[dict]:
     """A person's posts since the last look (pinned ones too, if they're new)."""
-    import instaloader
-
     key = f"instagram:@{handle}"
     since = store.get(conn, key, "") or iso(now() - FIRST_LOOK)
-    profile = instaloader.Profile.from_username(L.context, handle)
-    poster = {"name": profile.full_name or "", "avatar": save(http, profile.profile_pic_url, f"@{handle}", refresh=True) or ""}
-    posts = [p for p in islice(profile.get_posts(), PER_FETCH) if iso(p.date_utc.replace(tzinfo=timezone.utc)) > since]
-    found = [from_post(p, handle, poster, http) for p in posts]
+    user = cl.user_info_by_username_v1(handle)
+    avatar = str(user.profile_pic_url) if user.profile_pic_url else None
+    poster = {"name": user.full_name or "", "avatar": save(http, avatar, f"@{handle}", refresh=True) or ""}
+    posts = [m for m in cl.user_medias_v1(user.pk, PER_FETCH) if iso(m.taken_at) > since]
+    found = [from_post(m, handle, poster, http) for m in posts]
     if found:
         store.put(conn, key, max(it["published"] for it in found))
     return found
@@ -130,25 +136,24 @@ def person(conn, L, http: httpx.Client, handle: str) -> list[dict]:
 
 def collect(conn, handles: set[str]) -> list[dict]:
     """New posts from whoever is most overdue for a look."""
-    import instaloader
+    from instagrapi.exceptions import ClientError, LoginRequired, UserNotFound
 
     handle = due(conn, handles) if handles else None
     if not handle or store.get(conn, "instagram_paused_until", "") > iso(now()):
         return []
-    L = loader(conn)
-    if not L:
+    cl = client(conn)
+    if not cl:
         return []
     try:
         with httpx.Client(headers=UA, timeout=30, follow_redirects=True) as http:
-            found = person(conn, L, http, handle)
-    except instaloader.exceptions.ProfileNotExistsException:
+            found = person(conn, cl, http, handle)
+    except UserNotFound:
         log.warning("instagram @%s: no such account", handle)
         found = []
-    except (instaloader.exceptions.LoginRequiredException, instaloader.exceptions.LoginException) as e:
-        SESSION.unlink(missing_ok=True)  # log in afresh next time
-        problem(conn, f"Instagram logged us out: {e}")
+    except LoginRequired as e:
+        problem(conn, f"Instagram logged us out (logging in again next time): {e}")
         return []
-    except instaloader.exceptions.InstaloaderException as e:
+    except ClientError as e:
         refusals = store.get(conn, "instagram_refusals", 0) + 1
         wait = min(BACK_OFF * 2 ** (refusals - 1), MAX_BACK_OFF)
         store.put(conn, "instagram_refusals", refusals)

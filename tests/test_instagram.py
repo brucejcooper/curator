@@ -3,8 +3,9 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-import instaloader
 import pytest
+from instagrapi import Client
+from instagrapi.exceptions import BadPassword, LoginRequired, PleaseWaitFewMinutes, UserNotFound
 
 from curator import instagram, people, store
 from curator.judge import apply_shared_rules
@@ -12,8 +13,8 @@ from curator.stories import ingest
 
 
 def post(code, days, caption="A new ring, cast in recycled silver and set with a sapphire"):
-    when = (datetime.now(timezone.utc) - timedelta(days=days)).replace(tzinfo=None)  # instaloader's date_utc is naive
-    return SimpleNamespace(shortcode=code, caption=caption, date_utc=when, url=f"https://cdn.example/{code}.jpg")
+    when = datetime.now(timezone.utc) - timedelta(days=days)
+    return SimpleNamespace(code=code, caption_text=caption, taken_at=when, thumbnail_url=f"https://cdn.example/{code}.jpg", resources=[])
 
 
 @pytest.fixture
@@ -22,17 +23,16 @@ def insta(db, tmp_path, monkeypatch):
     monkeypatch.setenv("INSTAGRAM_USER", "throwaway")
     monkeypatch.setattr(instagram, "PICTURES", tmp_path / "media" / "instagram")
     monkeypatch.setattr(instagram, "SESSION", tmp_path / "session")
-    monkeypatch.setattr(instagram, "loader", lambda conn: SimpleNamespace(context=None))
     monkeypatch.setattr(instagram, "save", lambda http, url, name, refresh=False: f"https://curator.example/media/instagram/{name}.jpg")
     fake = SimpleNamespace(posts={}, looked=[], fail=None)
 
-    def from_username(context, handle):
+    def user_info(handle):
         fake.looked.append(handle)
         if fake.fail:
             raise fake.fail
-        return SimpleNamespace(full_name=handle.title(), profile_pic_url="https://cdn.example/me.jpg",
-                               get_posts=lambda: iter(fake.posts.get(handle, [])))
-    monkeypatch.setattr(instaloader.Profile, "from_username", staticmethod(from_username))
+        return SimpleNamespace(pk=handle, full_name=handle.title(), profile_pic_url="https://cdn.example/me.jpg")
+    cl = SimpleNamespace(user_info_by_username_v1=user_info, user_medias_v1=lambda pk, n: fake.posts.get(pk, [])[:n])
+    monkeypatch.setattr(instagram, "client", lambda conn: cl)
     return fake
 
 
@@ -62,10 +62,8 @@ def test_one_person_per_cycle_most_overdue_first_and_only_new_posts(db, insta):
 
 
 def test_being_logged_out_is_said_in_the_app_and_clears_once_it_reads_again(db, insta):
-    instagram.SESSION.write_text("old")
-    insta.fail = instaloader.exceptions.LoginRequiredException("Login required")
+    insta.fail = LoginRequired("Login required")
     assert instagram.collect(db, {"jeweller"}) == []
-    assert not instagram.SESSION.exists()  # logs in afresh next time
     assert "logged us out" in store.get(db, instagram.PROBLEM)
     insta.fail = None
     instagram.collect(db, {"jeweller"})  # still due: the failed look didn't count
@@ -73,7 +71,7 @@ def test_being_logged_out_is_said_in_the_app_and_clears_once_it_reads_again(db, 
 
 
 def test_a_refusal_pauses_instagram_for_an_hour(db, insta):
-    insta.fail = instaloader.exceptions.ConnectionException("401 Unauthorized - Please wait a few minutes")
+    insta.fail = PleaseWaitFewMinutes("Please wait a few minutes before you try again.")
     assert instagram.collect(db, {"jeweller"}) == [] and instagram.collect(db, {"jeweller"}) == []
     assert insta.looked == ["jeweller"]
     assert "trying again in 1 h" in store.get(db, instagram.PROBLEM)
@@ -90,11 +88,23 @@ def test_a_failed_login_waits_hours_before_trying_again(db, tmp_path, monkeypatc
 
     def login(self, user, password):
         tries.append(user)
-        raise instaloader.exceptions.BadCredentialsException("Wrong password.")
-    monkeypatch.setattr(instaloader.Instaloader, "login", login)
-    assert instagram.loader(db) is None and instagram.loader(db) is None
+        raise BadPassword("Wrong password.")
+    monkeypatch.setattr(Client, "login", login)
+    assert instagram.client(db) is None and instagram.client(db) is None
     assert tries == ["throwaway"]
     assert "Couldn't log in to Instagram as throwaway" in store.get(db, instagram.PROBLEM)
+
+
+def test_a_missing_account_is_skipped_until_its_next_turn(db, insta):
+    insta.fail = UserNotFound("not found")
+    assert instagram.collect(db, {"gone"}) == [] and instagram.collect(db, {"gone"}) == []
+    assert insta.looked == ["gone"] and store.get(db, instagram.PROBLEM) is None
+
+
+def test_an_album_shows_its_first_picture_and_a_video_its_still():
+    album = SimpleNamespace(thumbnail_url=None, resources=[SimpleNamespace(thumbnail_url=None), SimpleNamespace(thumbnail_url="https://cdn.example/1.jpg")])
+    assert instagram.picture(album) == "https://cdn.example/1.jpg"
+    assert instagram.picture(SimpleNamespace(thumbnail_url="https://cdn.example/v.jpg", resources=[])) == "https://cdn.example/v.jpg"
 
 
 def test_captions_full_of_hashtags_still_show(db, insta):
