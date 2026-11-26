@@ -138,7 +138,7 @@ def entries(conn, user: str, results: list[tuple[str, str, float]]) -> list[dict
     shown = dict(conn.execute(f"SELECT story_id, item_id FROM feed_history WHERE user = ? AND story_id IN ({marks})", (user, *stories)).fetchall())
     show = [shown.get(story) or item for story, item, _ in results]
     rows = {r["id"]: r for r in conn.execute(
-        f"""SELECT id, url, title, summary, image, source, published, author, quote, poster, via FROM items
+        f"""SELECT id, url, title, summary, image, images, source, published, author, quote, poster, via FROM items
             WHERE id IN ({','.join('?' * len(show))})""", show)}
     out = []
     for (story, _, score), item in zip(results, show):
@@ -148,7 +148,7 @@ def entries(conn, user: str, results: list[tuple[str, str, float]]) -> list[dict
         quote = store.json_or_none(r["quote"])
         out.append({"kind": "article", "id": f"search-{item}", "item": item, "url": r["url"], "title": r["title"],
                     "summary": without_quote(r["summary"] or "", quote), "quote": quote, "poster": store.json_or_none(r["poster"]),
-                    "image": r["image"] or None, "published": r["published"], "author": r["author"] or "", "source": r["source"],
+                    "image": r["image"] or None, "images": store.json_or_none(r["images"]), "published": r["published"], "author": r["author"] or "", "source": r["source"],
                     "lane": "main", "reason": "", "also": [], "via": store.json_or_none(r["via"]) or [], "picked": story in shown, "score": round(score, 3)})
     return annotate(conn, user, out)
 

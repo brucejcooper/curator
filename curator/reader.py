@@ -38,7 +38,7 @@ def card(it: dict) -> dict:
     return {
         "kind": "article", "id": c["sort_id"], "item": it["id"], "url": it["url"], "title": it["title"],
         "summary": without_quote(it.get("content_text") or "", c.get("quote")), "quote": c.get("quote"), "poster": c.get("poster"),
-        "image": it.get("image"), "published": it.get("date_published"),
+        "image": it.get("image"), "images": c.get("images"), "published": it.get("date_published"),
         "author": (it.get("authors") or [{}])[0].get("name") or "", "source": c.get("source", ""),
         "lane": c.get("lane", "main"), "reason": c.get("reason") or "", "also": c.get("also") or [],
         "trial": c.get("trial"), "via": c.get("via") or [],
@@ -134,12 +134,13 @@ def bookmarks(conn, user: str) -> dict:
     """The reader's bookmarks, newest first, and their Mastodon bookmarks if
     they've connected Mastodon."""
     rows = conn.execute(
-        """SELECT i.id, i.url, i.title, i.summary, i.image, i.source, i.published, i.author, i.quote, i.via
+        """SELECT i.id, i.url, i.title, i.summary, i.image, i.images, i.source, i.published, i.author, i.quote, i.via
            FROM user_bookmarks b JOIN items i ON i.id = b.item_id WHERE b.user = ? ORDER BY b.time DESC LIMIT 500""",
         (user,)).fetchall()
     quote = lambda r: json.loads(r["quote"]) if r["quote"] else None
     kept = [{"kind": "article", "id": f"bookmark-{r['id']}", "item": r["id"], "url": r["url"], "title": r["title"],
-             "summary": without_quote(r["summary"] or "", quote(r)), "quote": quote(r), "image": r["image"], "published": r["published"], "author": r["author"] or "",
+             "summary": without_quote(r["summary"] or "", quote(r)), "quote": quote(r), "image": r["image"],
+             "images": json.loads(r["images"]) if r["images"] else None, "published": r["published"], "author": r["author"] or "",
              "source": r["source"], "lane": "main", "reason": "", "also": [], "via": json.loads(r["via"]) if r["via"] else [],
              "bookmarked": True} for r in rows]
     posts = []

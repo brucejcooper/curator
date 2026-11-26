@@ -249,12 +249,13 @@ def ingest(conn, found: list[dict], tally: dict | None = None, follow_wrappers: 
             conn.execute("INSERT INTO stories VALUES (?, ?, ?, ?)", (story, it["id"], stamp, stamp))
         conn.execute(
             """INSERT INTO items (id, url, canonical, title, summary, source, author, published, fetched,
-                                  story_id, embedding, always_show, rule, sample, image, quote, poster, via)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                  story_id, embedding, always_show, rule, sample, image, quote, poster, via, images)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (it["id"], it["url"], it["canonical"], it["title"], it["summary"], it["source"], it["author"],
              it["published"], stamp, story, v.tobytes(), it["always_show"], it.get("rule"), int(random.random() < SAMPLE_RATE),
              it.get("image"), json.dumps(it["quote"]) if it.get("quote") else None,
-             json.dumps(it["poster"]) if it.get("poster") else None, json.dumps(it["via"]) if it.get("via") else None),
+             json.dumps(it["poster"]) if it.get("poster") else None, json.dumps(it["via"]) if it.get("via") else None,
+             json.dumps(it["images"]) if it.get("images") else None),
         )
         conn.execute("INSERT OR IGNORE INTO sightings VALUES (?, ?, ?, ?)", (it["id"], it["source"], it["seen_at"], stamp))
         if p := it.get("points_to"):

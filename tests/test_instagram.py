@@ -115,10 +115,20 @@ def test_a_private_account_not_followed_is_noted_and_the_others_carry_on(db, ins
     assert [it["url"].split("/")[-2] for it in instagram.collect(db, {"friend", "jeweller"})] == ["a"]  # not paused
 
 
-def test_an_album_shows_its_first_picture_and_a_video_its_still():
-    album = SimpleNamespace(thumbnail_url=None, resources=[SimpleNamespace(thumbnail_url=None), SimpleNamespace(thumbnail_url="https://cdn.example/1.jpg")])
-    assert instagram.picture(album) == "https://cdn.example/1.jpg"
-    assert instagram.picture(SimpleNamespace(thumbnail_url="https://cdn.example/v.jpg", resources=[])) == "https://cdn.example/v.jpg"
+def album(code, days, n):
+    return SimpleNamespace(**{**vars(post(code, days)), "thumbnail_url": None,
+                              "resources": [SimpleNamespace(thumbnail_url=f"https://cdn.example/{code}{i}.jpg") for i in range(n)]})
+
+
+def test_an_album_keeps_every_picture_and_a_video_its_still(db, insta):
+    assert instagram.pictures(SimpleNamespace(thumbnail_url="https://cdn.example/v.jpg", resources=[])) == ["https://cdn.example/v.jpg"]
+    insta.posts = {"jeweller": [album("a", 1, 3), post("b", 2)]}
+    a, b = instagram.collect(db, {"jeweller"})
+    assert a["image"].endswith("/a.jpg") and [u.rsplit("/", 1)[-1] for u in a["images"]] == ["a.jpg", "a-2.jpg", "a-3.jpg"]
+    assert b["image"].endswith("/b.jpg") and b["images"] is None  # one picture: no strip
+    ingest(db, [a, b])
+    row = db.execute("SELECT images FROM items WHERE url = ?", (a["url"],)).fetchone()[0]
+    assert store.json_or_none(row) == a["images"]
 
 
 def test_captions_full_of_hashtags_still_show(db, insta):
@@ -132,9 +142,9 @@ def test_captions_full_of_hashtags_still_show(db, insta):
 def test_pictures_no_item_uses_are_tidied_away(db, insta):
     pics = instagram.PICTURES
     pics.mkdir(parents=True)
-    for name in ("a.jpg", "gone.jpg", "@jeweller.jpg"):
+    for name in ("a.jpg", "a-2.jpg", "gone.jpg", "@jeweller.jpg"):
         (pics / name).write_bytes(b"x")
-    insta.posts = {"jeweller": [post("a", 1)]}
+    insta.posts = {"jeweller": [album("a", 1, 2)]}
     ingest(db, instagram.collect(db, {"jeweller"}))
     assert instagram.tidy(db) == 1
-    assert sorted(p.name for p in pics.iterdir()) == ["@jeweller.jpg", "a.jpg"]
+    assert sorted(p.name for p in pics.iterdir()) == ["@jeweller.jpg", "a-2.jpg", "a.jpg"]

@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS items (
   traits TEXT,                  -- Jev's answers to the reader-independent questions (traits.py)
   sample INTEGER DEFAULT 0,     -- picked for the maybe lane's random sample
   image TEXT,                   -- picture URL; '' once looked for and none found
+  images TEXT,                  -- JSON: every picture, when there's more than one (an Instagram album), the first being `image`
   quote TEXT,                   -- JSON: the post a quote post quotes {author, name, text, url, image}
   poster TEXT,                  -- JSON: who posted it, for a post or a shared link {name, avatar}
   via TEXT                      -- JSON: the wrappers it was found through, outermost first [{url, name, kind, author}] (follow.py)
@@ -164,6 +165,8 @@ def migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE items ADD COLUMN poster TEXT")
         if "via" not in cols:
             conn.execute("ALTER TABLE items ADD COLUMN via TEXT")
+        if "images" not in cols:
+            conn.execute("ALTER TABLE items ADD COLUMN images TEXT")
         if "traits" not in cols:
             conn.execute("ALTER TABLE items ADD COLUMN traits TEXT")
             if "jev" in cols:

@@ -369,6 +369,33 @@ function wholeIfOddShape(e) {
   if (ratio && (ratio < 0.45 || ratio > 0.7)) img.parentElement.classList.add('whole');
 }
 
+// An album (Instagram): its pictures in a row, one in view at a time, swiped
+// through, or stepped with the arrows where there's a mouse. The frame takes
+// the first picture's shape, within Instagram's own limits (4:5 to 1.91:1).
+function gallery(urls, link) {
+  const strip = el('div', { class: 'gallery-strip' }, urls.map((src, n) =>
+    link({ class: 'gallery-item', tabindex: '-1', 'aria-hidden': 'true' },
+      el('img', { src, alt: '', loading: n ? 'lazy' : null, onload: n ? null : fitToFirst }))));
+  const count = el('span', { class: 'gallery-count', text: `1 / ${urls.length}` });
+  const step = (d) => strip.scrollBy({ left: d * strip.clientWidth, behavior: 'smooth' });
+  const prev = el('button', { type: 'button', class: 'gallery-step prev', 'aria-label': 'Previous picture', text: '‹', onclick: () => step(-1) });
+  const next = el('button', { type: 'button', class: 'gallery-step next', 'aria-label': 'Next picture', text: '›', onclick: () => step(1) });
+  prev.disabled = true;
+  strip.addEventListener('scroll', () => {
+    const at = Math.round(strip.scrollLeft / (strip.clientWidth || 1));
+    count.textContent = `${at + 1} / ${urls.length}`;
+    prev.disabled = at === 0;
+    next.disabled = at === urls.length - 1;
+  }, { passive: true });
+  return el('div', { class: 'gallery' }, strip, count, prev, next);
+}
+
+function fitToFirst(e) {
+  const img = e.currentTarget;
+  const ratio = img.naturalWidth / img.naturalHeight;
+  if (ratio) img.closest('.gallery').style.aspectRatio = String(Math.min(1.91, Math.max(0.8, ratio)));
+}
+
 // The post a quote post quotes, in a box as Mastodon apps show it. Tapping
 // it opens the quoted post.
 function curatedQuote(q) {
@@ -437,6 +464,7 @@ export function renderCurated(item, { onVote, onBookmark, onOpen }) {
     link({ class: 'time', title: new Date(item.published).toLocaleString(), text: relTime(item.published) })));
 
   const image = safeUrl(item.image);
+  const album = (item.images || []).map(safeUrl).filter(Boolean);
   // A Mastodon or Bluesky post has no real title: the curator's "title" is
   // just its opening words. Show the post's text once, in full, instead.
   const opening = item.title.replace(/…$/, '').trim();
@@ -445,7 +473,7 @@ export function renderCurated(item, { onVote, onBookmark, onOpen }) {
   const titleLink = link({ class: 'curated-title' }, el('strong', { text: item.title }));
   const body = el('div', { class: 'body' },
     isPost ? null : titleLink,
-    image ? link({ class: 'curated-image', tabindex: '-1', 'aria-hidden': 'true' },
+    album.length > 1 ? gallery(album, link) : image ? link({ class: 'curated-image', tabindex: '-1', 'aria-hidden': 'true' },
       el('img', { src: image, alt: '', loading: 'lazy', onload: wholeIfOddShape, onerror: (e) => e.currentTarget.parentElement.remove() })) : null,
     text);
   if (text) {

@@ -212,7 +212,7 @@ def timeline(conn, user: str) -> list[dict]:
     rows = conn.execute(
         """SELECT f.story_id AS story, f.feed_lane AS lane, f.sort_id, f.reason, f.trial AS story_trial,
                   f.story_jev, f.story_local, f.added AS first_fetched,
-                  i.id, i.url, i.title, i.summary, i.image, i.published, i.author, i.source, i.quote, i.poster, i.via
+                  i.id, i.url, i.title, i.summary, i.image, i.images, i.published, i.author, i.source, i.quote, i.poster, i.via
            FROM feed_history f JOIN items i ON i.id = f.item_id
            WHERE f.user = ? AND f.feed_lane IS NOT NULL AND f.added >= ?
            ORDER BY i.published DESC, CAST(f.sort_id AS INTEGER)""", (user, window_start())).fetchall()
@@ -249,6 +249,7 @@ def json_feed(conn, stories: list[dict], title: str, feed_url: str) -> dict:
                 **({"quote": json.loads(s["quote"])} if s.get("quote") else {}),
                 **({"poster": json.loads(s["poster"])} if s.get("poster") else {}),
                 **({"via": json.loads(s["via"])} if s.get("via") else {}),
+                **({"images": json.loads(s["images"])} if s.get("images") else {}),
             },
         })
     return {"version": "https://jsonfeed.org/version/1.1", "title": title, "home_page_url": SITE,

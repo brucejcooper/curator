@@ -50,6 +50,8 @@ const state = {
   articles: [
     ...plains(3000, 30, 2),
     article(3007, 'read-one'),
+    article(3015, 'album', { image: 'https://cdn.example/a.jpg', source: 'instagram:@jeweller', author: '@jeweller',
+      images: ['https://cdn.example/a.jpg', 'https://cdn.example/a-2.jpg', 'https://cdn.example/a-3.jpg'] }),
     article(3013, 'between', { image: 'https://news.example/pic.jpg', summary: 'Summary of between. More at https://example.org/more.', also: [{ url: 'https://other.example/x', source: 'rss:The Verge' }],
       quote: { author: '@jn@c.im', name: 'Jordan', text: 'The quoted post.', url: 'https://c.im/@jn/1', image: null },
       via: [{ url: 'https://bsky.app/profile/fan.example/post/3x', name: 'A Fan', kind: 'bluesky', author: '@fan.example' },
@@ -309,6 +311,19 @@ assert.equal(await page.$('#timeline article:not(.curated)'), null, 'the timelin
 const art = 'article[data-id="3013"]';
 assert.equal(await page.$(`${art} .curated-label`), null, 'a plain pick has no label: everything is picked');
 assert.equal(await page.$eval(`${art} .curated-image img`, (i) => i.src), 'https://news.example/pic.jpg');
+assert.equal(await page.$(`${art} .gallery`), null, 'one picture: no strip');
+
+// An album: every picture in a strip, one at a time, with a count and arrows.
+const album = 'article[data-id="3015"]';
+assert.equal(await page.$(`${album} .curated-image`), null);
+assert.deepEqual(await page.$$eval(`${album} .gallery-item img`, (i) => i.map((x) => x.src.split('/').pop())), ['a.jpg', 'a-2.jpg', 'a-3.jpg']);
+assert.equal(await page.textContent(`${album} .gallery-count`), '1 / 3');
+assert.ok(await page.$eval(`${album} .gallery-step.prev`, (b) => b.disabled), 'nothing before the first');
+await page.click(`${album} .gallery-step.next`);
+await page.waitForFunction((a) => document.querySelector(`${a} .gallery-count`).textContent === '2 / 3', album);
+await page.waitForFunction((a) => { const s = document.querySelector(`${a} .gallery-strip`); return Math.abs(s.scrollLeft - s.clientWidth) < 2; },
+  album, { timeout: 3000 }); // stepped one whole picture along
+assert.ok(await page.$eval(`${album} .gallery-strip`, (s) => s.scrollWidth <= s.parentElement.scrollWidth * 3 + 2), 'pictures side by side, not stacked');
 assert.equal(await page.$eval(`${art} .curated-summary a`, (a) => a.href), 'https://example.org/more');
 assert.match(await page.textContent(`${art} .also`), /Also covered by The Verge/);
 assert.equal(await page.textContent(`${art} .via`), 'via Hackaday · via @fan.example on Bluesky', 'the wrappers stripped, nearest first');

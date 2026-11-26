@@ -10,6 +10,7 @@ served from /media.
 When it can't read (a failed login, Instagram asking "was this you?"), it says
 so in the app (`problem`) rather than going quiet."""
 
+import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -107,17 +108,20 @@ def save(http: httpx.Client, url: str | None, name: str, refresh: bool = False) 
     return f"{PUBLIC_URL}/media/instagram/{name}.jpg" if path.exists() else None
 
 
-def picture(media) -> str | None:
-    """A post's picture: its own, or an album's first, or a video's still."""
-    url = media.thumbnail_url or next((r.thumbnail_url for r in media.resources if r.thumbnail_url), None)
-    return str(url) if url else None
+def pictures(media) -> list[str]:
+    """A post's pictures: an album's every one (a video in it as its still),
+    else its own (a video's still)."""
+    urls = [r.thumbnail_url for r in media.resources if r.thumbnail_url] or [media.thumbnail_url]
+    return [str(u) for u in urls if u]
 
 
 def from_post(media, handle: str, poster: dict, http: httpx.Client) -> dict:
     caption = (media.caption_text or "").strip()
     it = item(f"https://www.instagram.com/p/{media.code}/", short_title(caption) if caption else f"{poster['name'] or handle} on Instagram",
               caption, f"instagram:@{handle}", f"@{handle}", media.taken_at, always_show=True)
-    return {**it, "image": save(http, picture(media), media.code), "quote": None, "poster": poster}
+    # The first keeps the plain name: it's the card's picture wherever only one is shown.
+    saved = [s for n, url in enumerate(pictures(media)) if (s := save(http, url, media.code if n == 0 else f"{media.code}-{n + 1}"))]
+    return {**it, "image": saved[0] if saved else None, "images": saved if len(saved) > 1 else None, "quote": None, "poster": poster}
 
 
 class Private(Exception):
@@ -190,6 +194,8 @@ def tidy(conn) -> int:
     if not PICTURES.exists():
         return 0
     used = {r[0].rsplit("/", 1)[-1] for r in conn.execute("SELECT image FROM items WHERE image LIKE '%/media/instagram/%'")}
+    for (images,) in conn.execute("SELECT images FROM items WHERE images LIKE '%/media/instagram/%'"):
+        used |= {u.rsplit("/", 1)[-1] for u in json.loads(images)}
     gone = [p for p in PICTURES.glob("*.jpg") if not p.name.startswith("@") and p.name not in used]
     for p in gone:
         p.unlink()

@@ -71,7 +71,7 @@ def old_articles(user: str) -> list[dict]:
         out.append({
             "kind": "article", "id": c["sort_id"], "item": it["id"], "url": it["url"], "title": it["title"],
             "summary": reader.without_quote(it.get("content_text") or "", c.get("quote")), "quote": c.get("quote"), "poster": c.get("poster"),
-            "image": it.get("image"), "published": it.get("date_published"),
+            "image": it.get("image"), "images": c.get("images"), "published": it.get("date_published"),
             "author": (it.get("authors") or [{}])[0].get("name") or "", "source": c.get("source", ""),
             "lane": c.get("lane", "main"), "reason": c.get("reason") or "", "also": c.get("also") or [],
             "trial": c.get("trial"), "via": c.get("via") or [],
